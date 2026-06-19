@@ -1,0 +1,8 @@
+# Build artifacts — produced by native/build.sh, agent `mvn package`, collector/build.sh.
+# Source + build scripts are committed; binaries are not.
+native/*.o
+native/*.so
+collector/*.o
+collector/collector
+agent/target/
+*.class
