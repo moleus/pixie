@@ -1716,6 +1716,9 @@ int probe_entry_socket_recvmsg(struct pt_regs* ctx) {
 // OpenSSL tracing probes.
 #include "src/stirling/source_connectors/socket_tracer/bcc_bpf/openssl_trace.c"
 
+// JVM/JSSE TLS tracing probes (Kafka and other JVM services).
+#include "src/stirling/source_connectors/socket_tracer/bcc_bpf/jsse_trace.c"
+
 // Go HTTP2 tracing probes.
 #include "src/stirling/source_connectors/socket_tracer/bcc_bpf/go_http2_trace.c"
 

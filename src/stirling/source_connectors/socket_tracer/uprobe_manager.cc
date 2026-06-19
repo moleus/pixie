@@ -687,6 +687,77 @@ int UProbeManager::DeployOpenSSLUProbes(const absl::flat_hash_set<md::UPID>& pid
   return uprobe_count;
 }
 
+// The native library shipped with the pixie-jsse Java agent. It exports the
+// single uprobe target `pixie_jsse_plaintext`, into which the agent feeds TLS
+// plaintext intercepted at the JSSE boundary.
+constexpr std::string_view kLibPixieJSSE = "libpixie_jsse.so";
+
+StatusOr<int> UProbeManager::AttachJavaTLSUProbes(uint32_t pid) {
+  const std::vector<std::string_view> lib_names = {kLibPixieJSSE};
+
+  // Find the agent's native library in the target's address space (handles the
+  // container case via the proc root path), exactly as we do for libssl.so.
+  PX_ASSIGN_OR_RETURN(const std::vector<std::filesystem::path> lib_paths,
+                      FindHostPathForPIDLibs(lib_names, pid, proc_parser_.get(),
+                                             HostPathForPIDPathSearchType::kSearchTypeEndsWith));
+
+  const std::filesystem::path container_lib = lib_paths[0];
+  if (container_lib.empty()) {
+    // The pixie-jsse agent is not injected into this JVM. Not an error.
+    return 0;
+  }
+  if (!fs::Exists(container_lib)) {
+    return error::Internal("libpixie_jsse.so not found [path = $0]", container_lib.string());
+  }
+
+  // Only probe a given library once.
+  auto result = java_tls_probed_binaries_.insert(container_lib.string());
+  if (!result.second) {
+    return 0;
+  }
+
+  // Optimistically tag the SSL source so events that fire before the BPF map is
+  // populated are still attributed to JVM/JSSE. Cleaned up when the PID exits.
+  PX_UNUSED(openssl_source_map_->SetValue(pid, kJavaJSSESource));
+
+  for (auto spec : kJavaTLSUProbes) {
+    spec.binary_path = container_lib.string();
+    PX_RETURN_IF_ERROR(LogAndAttachUProbe(spec));
+  }
+  return kJavaTLSUProbes.size();
+}
+
+int UProbeManager::DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pids) {
+  int uprobe_count = 0;
+
+  for (const auto& pid : pids) {
+    if (cfg_disable_self_probing_ && pid.pid() == static_cast<uint32_t>(getpid())) {
+      continue;
+    }
+
+    PX_ASSIGN_OR(const auto exe_path, proc_parser_->GetExePath(pid.pid()), continue);
+
+    // Only JVM processes are candidates. DetectApplication already recognizes
+    // Application::kJava by the `java` executable name.
+    if (DetectApplication(exe_path) != Application::kJava) {
+      continue;
+    }
+
+    auto count_or = AttachJavaTLSUProbes(pid.pid());
+    if (count_or.ok()) {
+      uprobe_count += count_or.ValueOrDie();
+      VLOG(1) << absl::Substitute("Attaching JVM/JSSE uprobes succeeded for PID $0: $1 probes",
+                                  pid.pid(), count_or.ValueOrDie());
+    } else {
+      monitor_.AppendSourceStatusRecord("socket_tracer", count_or.status(), "AttachJavaTLSUProbes");
+      VLOG(1) << absl::Substitute("Attaching JVM/JSSE uprobes failed for PID $0: $1", pid.pid(),
+                                  count_or.ToString());
+    }
+  }
+
+  return uprobe_count;
+}
+
 StatusOr<std::string> UProbeManager::MD5onFile(const std::string& file) {
   // Implementation based on
   // https://stackoverflow.com/questions/1220046/how-to-get-the-md5-hash-of-a-file-in-c
@@ -1028,9 +1099,16 @@ void UProbeManager::DeployUProbes(const absl::flat_hash_set<md::UPID>& pids) {
     if (FLAGS_stirling_enable_grpc_c_tracing && KernelVersionAllowsGRPCCTracing()) {
       uprobe_count += DeployGrpcCUProbes(pids_to_rescan_for_uprobes);
     }
+    // JVMs load the pixie-jsse native library lazily (System.load at agent
+    // premain), so the rescan path catches libpixie_jsse.so appearing after
+    // process start-up. Reuse the same rescan set (PIDsToRescanForUProbes has
+    // side effects and must only be called once per cycle).
+    uprobe_count += DeployJavaTLSUProbes(pids_to_rescan_for_uprobes);
   }
 
   uprobe_count += DeployGoUProbes(proc_tracker_.new_upids());
+
+  uprobe_count += DeployJavaTLSUProbes(proc_tracker_.new_upids());
 
   if (uprobe_count != 0) {
     LOG(INFO) << absl::Substitute("Number of uprobes deployed = $0", uprobe_count);
