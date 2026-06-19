@@ -104,4 +104,8 @@ enum ssl_source_t {
   kLibPythonSource,
   kLibNettyTcnativeSource,
   kStaticallyLinkedSource,
+  // JVM/JSSE TLS, captured via the pixie-jsse Java agent + libpixie_jsse.so
+  // uprobe target (see bcc_bpf/jsse_trace.c). Kafka and other JVM services use
+  // the in-JVM JSSE stack rather than libssl/netty-tcnative.
+  kJavaJSSESource,
 };

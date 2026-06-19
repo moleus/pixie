@@ -460,6 +460,20 @@ class UProbeManager {
       },
   });
 
+  // Probes for JVM/JSSE TLS tracing. The JVM performs TLS entirely in Java
+  // (no stable libssl symbols to probe), so the pixie-jsse Java agent surfaces
+  // plaintext through the single exported native symbol below, which we uprobe.
+  // The binary_path is filled in at attach time with the resolved host path of
+  // the agent's native library (libpixie_jsse.so) for the target PID.
+  inline static const auto kJavaTLSUProbes = MakeArray<bpf_tools::UProbeSpec>({
+      bpf_tools::UProbeSpec{
+          .binary_path = "",
+          .symbol = "pixie_jsse_plaintext",
+          .attach_type = bpf_tools::BPFProbeAttachType::kEntry,
+          .probe_fn = "probe_entry_jsse_plaintext",
+      },
+  });
+
   /**
    * Deploys all available uprobe types (HTTP2, OpenSSL, etc.) on new processes.
    * @param pids The list of pids to analyze and instrument with uprobes, if appropriate.
@@ -479,6 +493,24 @@ class UProbeManager {
    * @return Number of uprobes deployed.
    */
   int DeployGoUProbes(const absl::flat_hash_set<md::UPID>& pids);
+
+  /**
+   * Deploys JVM/JSSE TLS uprobes on new processes. Only Java processes that have
+   * the pixie-jsse agent's native library (libpixie_jsse.so) mapped are probed.
+   * @param pids The list of pids to analyze and instrument, if appropriate.
+   * @return Number of uprobes deployed.
+   */
+  int DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pids);
+
+  /**
+   * Attaches the JVM/JSSE TLS uprobes for the specified PID, if its address space
+   * has the pixie-jsse agent's native library (libpixie_jsse.so) mapped.
+   *
+   * @param pid The PID whose mount namespace is examined for libpixie_jsse.so.
+   * @return The number of uprobes deployed. It is not an error if the library is
+   *         not present (the agent isn't injected); the return value is then zero.
+   */
+  StatusOr<int> AttachJavaTLSUProbes(uint32_t pid);
 
   /**
    * Sets up the BPF maps used for GOID tracking. Required for general Go tracing.
@@ -633,6 +665,7 @@ class UProbeManager {
   absl::flat_hash_set<std::string> go_tls_probed_binaries_;
   absl::flat_hash_set<std::string> nodejs_binaries_;
   absl::flat_hash_set<std::string> grpc_c_probed_binaries_;
+  absl::flat_hash_set<std::string> java_tls_probed_binaries_;
 
   // BPF maps through which the addresses of symbols for a given pid are communicated to uprobes.
   std::unique_ptr<MapT<ssl_source_t>> openssl_source_map_;

@@ -34,6 +34,7 @@ cc_library(
         "go_tls_trace.c",
         "go_trace_common.h",
         "grpc_c_trace.c",
+        "jsse_trace.c",
         "macros.h",
         "node_openssl_trace.c",
         "openssl_trace.c",
