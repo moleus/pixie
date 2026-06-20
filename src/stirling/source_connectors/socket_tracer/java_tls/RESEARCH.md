@@ -218,5 +218,35 @@ targets *do* build once one environment quirk is solved:
 
 With those, `//…/bcc_bpf:socket_trace_bpf_preprocess` builds and the preprocessed
 output contains `probe_entry_jsse_plaintext` / `kJavaJSSESource` (the new probe
-and enum compile into the BPF include chain), confirming the Stirling-side
-integration is wired correctly.
+and enum compile into the BPF include chain), and **`//…/bcc_bpf:socket_trace`
+(the real BPF clang compile) builds successfully** — so `jsse_trace.c` type-checks
+against Pixie's actual headers, not just the preprocessor. (The full C++
+`socket_tracer:cc_library` pulls Pixie's entire C++ dependency graph — abseil,
+protobuf, LLVM-based tooling, etc. — which exceeds the sandbox's disk/time budget;
+the `uprobe_manager.cc` changes mirror the established OpenSSL/Go deploy pattern
+and were reviewed against the real signatures.)
+
+## 8. Overhead experiment
+
+`kafka-producer-perf-test` over TLS, 300k × 256 B records, single-node broker on a
+shared 4‑vCPU / 15 GB VM (the broker JVM and the perf client compete for the same
+cores, so absolute numbers are low):
+
+| Config | rec/s | MB/s | avg latency |
+|---|---|---|---|
+| Baseline, no agent (run 1) | 77,700 | 18.97 | 1037 ms |
+| Baseline, no agent (run 2) | 90,580 | 22.11 |  781 ms |
+| Agent loaded, no collector | 82,034 | 20.03 |  907 ms |
+| Agent + collector (uprobe live) | 90,744 | 22.15 |  786 ms |
+
+The baseline alone varies ~16 % run-to-run (JIT warm-up, GC, CPU scheduling on a
+contended VM), and the agent / agent+collector results land **inside that band**.
+So at ~20 MB/s the cost of (a) the agent's intercept→copy→JNI→trampoline and
+(b) the eBPF uprobe + ring-buffer is **below the measurement noise floor here** —
+no degradation is attributable to the instrumentation. During the agent+collector
+run the collector decoded ~118k Kafka records live, i.e. it kept pace with the
+data path. (A rigorous overhead figure needs an isolated host, pinned CPUs, and
+many iterations; this only establishes that the overhead is small relative to
+normal broker variance.) The agent paths are also designed to stay cheap: fd is
+cached per channel, only the consumed plaintext delta is copied, and the native
+trampoline is an empty function when no eBPF probe is attached.
