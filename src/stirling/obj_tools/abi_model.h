@@ -78,6 +78,44 @@ enum class RegisterName : int {
   kXMM12 = 112,
   kXMM13 = 113,
   kXMM14 = 114,
+
+  // arm64 (AArch64) general-purpose registers X0..X15, which map directly onto
+  // struct pt_regs->regs[0..15]. Go's register ABI (Go >= 1.17) uses R0..R15 for
+  // integer args/results; AAPCS64 (C/C++) uses X0..X7 for args, X0/X1 for results.
+  kR0 = 200,
+  kR1 = 201,
+  kR2 = 202,
+  kR3 = 203,
+  kR4 = 204,
+  kR5 = 205,
+  kR6 = 206,
+  kR7 = 207,
+  kR8Arm = 208,
+  kR9Arm = 209,
+  kR10Arm = 210,
+  kR11Arm = 211,
+  kR12Arm = 212,
+  kR13Arm = 213,
+  kR14Arm = 214,
+  kR15Arm = 215,
+
+  // arm64 SIMD/FP registers V0..V15.
+  kV0 = 300,
+  kV1 = 301,
+  kV2 = 302,
+  kV3 = 303,
+  kV4 = 304,
+  kV5 = 305,
+  kV6 = 306,
+  kV7 = 307,
+  kV8 = 308,
+  kV9 = 309,
+  kV10 = 310,
+  kV11 = 311,
+  kV12 = 312,
+  kV13 = 313,
+  kV14 = 314,
+  kV15 = 315,
 };
 
 enum class TypeClass { kNone, kInteger, kFloat, kMixed };
