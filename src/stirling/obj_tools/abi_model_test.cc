@@ -221,6 +221,26 @@ TEST(SystemVAMD64ABIModel, ReturnValues) {
                    (VarLocation{LocationType::kRegister, 0, {hidden_arg0}}));
 }
 
+// Regression: a System V function that uses up every integer argument register
+// and then returns an aggregate larger than the integer return registers takes
+// the hidden-return-pointer path. That path used to call
+// int_arg_registers_.front()/pop_front() unconditionally, which is undefined
+// behavior once the argument-register deque is empty. It must now yield a
+// well-defined location instead of reading an empty deque. (Consume 8 integer
+// args so the arg registers are exhausted on both System V (6) and AAPCS64 (8).)
+TEST(SystemVAMD64ABIModel, ReturnValueAfterArgRegistersExhausted) {
+  std::unique_ptr<ABICallingConventionModel> abi_model =
+      ABICallingConventionModel::Create(ABI::kSystemVAMD64);
+  for (int i = 0; i < 8; ++i) {
+    EXPECT_OK(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, /* is_ret_arg */ false));
+  }
+  // 24 bytes => 3 integer registers required > the 2 integer return registers,
+  // so this hits the hidden-return-pointer branch with the arg registers empty.
+  auto ret = abi_model->PopLocation(TypeClass::kInteger, 24, 8, 1, /* is_ret_arg */ true);
+  EXPECT_OK(ret);
+  EXPECT_EQ(ret.ConsumeValueOrDie().loc_type, LocationType::kStack);
+}
+
 }  // namespace obj_tools
 }  // namespace stirling
 }  // namespace px
