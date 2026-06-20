@@ -100,6 +100,13 @@ public final class PixieJsseAgent {
 
       AgentBuilder b =
           new AgentBuilder.Default()
+              // disableClassFormatChanges() selects the REDEFINE type strategy (no added
+              // methods/fields), which is REQUIRED to retransform ALREADY-LOADED classes. Without
+              // it ByteBuddy rebases (adds methods) and the JVM rejects the JVMTI retransform of a
+              // loaded class, so a dynamic attach (e.g. the PEM/jattach injecting us into a running
+              // broker) "installs" but instruments nothing. Our hooks are Advice-only (inlined into
+              // existing method bodies), so REDEFINE is sufficient — and this also works at premain.
+              .disableClassFormatChanges()
               .with(AgentBuilder.RedefinitionStrategy.RETRANSFORMATION)
               .ignore(net.bytebuddy.matcher.ElementMatchers.none());
 
