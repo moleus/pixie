@@ -124,8 +124,18 @@ Components in this directory:
 |------|------------|
 | `native/` | `libpixie_jsse.so`: the JNI bridge + the stable `pixie_jsse_plaintext` uprobe target. |
 | `agent/`  | `pixie-jsse-agent.jar`: ByteBuddy agent that instruments `SslTransportLayer`. |
-| `collector/` | A standalone eBPF "mini-PEM" (libbpf) that decodes Kafka and prints table rows — stands in for the full Stirling pipeline so the approach is runnable without building all of Pixie. Includes `kafka_parser.h`, a real from-scratch Kafka wire decoder (request header, Produce/Fetch → RecordBatch v2 → individual key/value records; flexible/compact encodings; gzip+zstd decompression; correlation-id pairing). |
-| `scripts/` | `run_demo.sh` — one-shot end-to-end demo (certs → broker+agent → collector → produce/consume). |
+| `collector/` | A standalone eBPF "mini-PEM" (libbpf) that decodes Kafka and prints table rows — stands in for the full Stirling pipeline so the approach is runnable without building all of Pixie. Includes `kafka_parser.h`, a real from-scratch Kafka wire decoder (request header, Produce/Fetch → RecordBatch v2 → individual key/value records; flexible/compact encodings; gzip+zstd+lz4 decompression; correlation-id pairing). |
+| `scripts/` | `run_demo.sh` — one-shot end-to-end demo (certs → broker+agent → collector → produce/consume). `selftest.sh` — regression test that produces known records over TLS with each codec and asserts the collector decoded them. |
+
+### What's been validated (live, Kafka 3.9.0 / Java 21)
+
+- Decrypted **Produce** records (topic/key/value) and **Fetch** records delivered
+  to the consumer, on `encrypted=TRUE` connections where `tcpdump` saw only ciphertext.
+- 10 correlation-paired Kafka APIs; **multi-partition**; **gzip/zstd/lz4** compression;
+  Fetch **v17** (topic_id/UUID) — see `docs/sample_output.txt` and `RESEARCH.md` §6.
+- `scripts/selftest.sh` → ALL PASS across none/gzip/zstd/lz4.
+- Stirling BPF integration compiles via Bazel (`//…/bcc_bpf:socket_trace`); see `RESEARCH.md` §7.
+- Overhead at ~20 MB/s is within run-to-run noise (`RESEARCH.md` §8).
 
 ---
 
