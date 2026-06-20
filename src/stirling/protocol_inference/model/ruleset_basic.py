@@ -247,15 +247,16 @@ def infer_mysql_message(buf, count):
 #     correlation_id => INT32
 def infer_kafka_request(buf):
     # Note: The Number of Kafka APIs and their versions might change in the future.
-    kNumAPIs = 62
-    kMaxAPIVersion = 12
+    # Kept in sync with infer_kafka_request() in protocol_inference.h.
+    kNumAPIs = 90
+    kMaxAPIVersion = 20
 
     requestAPIKey = int.from_bytes(buf[4:6], byteorder="big")
-    if requestAPIKey < 0 or requestAPIKey >= kNumAPIs:
+    if requestAPIKey < 0 or requestAPIKey > kNumAPIs:
         return MessageType.kUnknown
 
     requestAPIVersion = int.from_bytes(buf[6:8], byteorder="big")
-    if requestAPIVersion < 0 or requestAPIKey > kMaxAPIVersion:
+    if requestAPIVersion < 0 or requestAPIVersion > kMaxAPIVersion:
         return MessageType.kUnknown
 
     correlationID = int.from_bytes(buf[8:12], byteorder="big")

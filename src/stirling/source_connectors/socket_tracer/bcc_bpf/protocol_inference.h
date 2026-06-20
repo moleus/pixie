@@ -390,9 +390,16 @@ static __inline enum message_type_t infer_mysql_message(const char* buf, size_t 
 //     request_api_version => INT16
 //     correlation_id => INT32
 static __inline enum message_type_t infer_kafka_request(const char* buf) {
-  // API is Kafka's terminology for opcode.
-  static const int kNumAPIs = 62;
-  static const int kMaxAPIVersion = 12;
+  // API is Kafka's terminology for opcode. These bounds gate whether a connection is
+  // classified as Kafka at all (protocol=Unknown otherwise), so they must track
+  // current Kafka or live broker traffic silently stops being traced. As of Kafka
+  // 3.9/4.x the highest assigned API key is in the 80s (e.g. RemoveRaftVoter=81,
+  // share-group APIs) and the highest API version is Fetch v17; both are bumped a few
+  // releases apart, so a little head-room is kept. False positives stay low because
+  // infer_kafka_message() additionally requires count == message_size exactly, plus a
+  // non-negative correlation id.
+  static const int kNumAPIs = 90;
+  static const int kMaxAPIVersion = 20;
 
   const int16_t request_API_key = read_big_endian_int16(buf);
   if (request_API_key < 0 || request_API_key > kNumAPIs) {
