@@ -146,6 +146,9 @@ bool operator==(const FetchRespTopic& lhs, const FetchRespTopic& rhs) {
   if (lhs.name != rhs.name) {
     return false;
   }
+  if (lhs.topic_id != rhs.topic_id) {
+    return false;
+  }
   if (lhs.partitions.size() != rhs.partitions.size()) {
     return false;
   }
@@ -448,6 +451,24 @@ TEST(KafkaPacketDecoder, TestExtractFetchRespV12) {
   PacketDecoder decoder(input);
   decoder.SetAPIInfo(APIKey::kFetch, 12);
   EXPECT_OK_AND_EQ(decoder.ExtractFetchResp(), expected_result);
+}
+
+// Fetch response v13 identifies the topic by a UUID topic_id instead of a name.
+TEST(KafkaPacketDecoder, TestExtractFetchRespTopicV13TopicId) {
+  std::string in;
+  const char kUuid[16] = {0x12, 0x34, 0x56, 0x78, (char)0x9a, (char)0xbc, (char)0xde, (char)0xf0,
+                          0x11, 0x22, 0x33, 0x44, 0x55,       0x66,       0x77,       (char)0x88};
+  in.append(kUuid, 16);  // topic_id (UUID)
+  in.push_back(0x01);    // partitions: compact array, 0 entries
+  in.push_back(0x00);    // topic tag section
+
+  FetchRespTopic expected{
+      .topic_id = "12345678-9abc-def0-1122-334455667788",
+      .partitions = {},
+  };
+  PacketDecoder decoder(in);
+  decoder.SetAPIInfo(APIKey::kFetch, 13);
+  EXPECT_OK_AND_EQ(decoder.ExtractFetchRespTopic(), expected);
 }
 
 TEST(KafkaPacketDecoder, TestExtractFetchRespV11MissingMessageSet) {

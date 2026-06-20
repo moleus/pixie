@@ -126,10 +126,13 @@ struct FetchRespPartition {
 
 struct FetchRespTopic {
   std::string name;
+  // Fetch v13+ identifies the topic by a 16-byte UUID instead of the name.
+  std::string topic_id;
   std::vector<FetchRespPartition> partitions;
 
   void ToJSON(utils::JSONObjectBuilder* builder) const {
     builder->WriteKV("name", name);
+    builder->WriteKV("topic_id", topic_id);
     builder->WriteKVArrayRecursive<FetchRespPartition>("partitions", partitions);
   }
 };
