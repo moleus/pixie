@@ -182,6 +182,45 @@ TEST(SystemVAMD64ABIModel, FloatParameters) {
                    (VarLocation{LocationType::kRegisterFP, 24, {f3}}));
 }
 
+// Return values use the retval register tables (is_ret_arg=true), which the fix also
+// ported to arm64. Go returns in the same registers as args (R0.. / RAX..).
+TEST(GolangRegisterABIModel, ReturnValues) {
+  std::unique_ptr<ABICallingConventionModel> abi_model =
+      ABICallingConventionModel::Create(ABI::kGolangRegister);
+#if defined(__aarch64__)
+  const RegisterName r0 = RegisterName::kR0, r1 = RegisterName::kR1, r2 = RegisterName::kR2;
+#else
+  const RegisterName r0 = RegisterName::kRAX, r1 = RegisterName::kRBX, r2 = RegisterName::kRCX;
+#endif
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, /*is_ret_arg*/ true),
+                   (VarLocation{LocationType::kRegister, 0, {r0}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, true),
+                   (VarLocation{LocationType::kRegister, 8, {r1}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, true),
+                   (VarLocation{LocationType::kRegister, 16, {r2}}));
+}
+
+// The C ABI has only two integer return registers (arm64 X0/X1, amd64 RAX/RDX). A third
+// return slot overflows into the hidden-return-pointer branch, which consumes the first
+// integer *argument* register (arm64 X0, amd64 RDI).
+TEST(SystemVAMD64ABIModel, ReturnValues) {
+  std::unique_ptr<ABICallingConventionModel> abi_model =
+      ABICallingConventionModel::Create(ABI::kSystemVAMD64);
+#if defined(__aarch64__)
+  const RegisterName ret0 = RegisterName::kR0, ret1 = RegisterName::kR1,
+                     hidden_arg0 = RegisterName::kR0;
+#else
+  const RegisterName ret0 = RegisterName::kRAX, ret1 = RegisterName::kRDX,
+                     hidden_arg0 = RegisterName::kRDI;
+#endif
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, true),
+                   (VarLocation{LocationType::kRegister, 0, {ret0}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, true),
+                   (VarLocation{LocationType::kRegister, 8, {ret1}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, true),
+                   (VarLocation{LocationType::kRegister, 0, {hidden_arg0}}));
+}
+
 }  // namespace obj_tools
 }  // namespace stirling
 }  // namespace px
