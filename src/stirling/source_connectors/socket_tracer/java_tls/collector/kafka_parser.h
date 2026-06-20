@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <snappy-c.h>
 #include <zlib.h>
 #include <zstd.h>
 
@@ -222,7 +223,30 @@ static int kafka_decompress(int codec, const uint8_t *in, int inlen, uint8_t *ou
     LZ4F_freeDecompressionContext(dctx);
     return LZ4F_isError(r) ? -1 : (int)dstSize;
   }
-  return -1;  /* snappy(2): xerial-framed snappy lib not available here */
+  if (codec == 2) {  /* snappy */
+    /* Kafka uses xerial framing: 8-byte magic (0x82 "SNAPPY" 0x00) + int32
+     * version + int32 compat, then repeated [int32 block_len][snappy block]. */
+    if (inlen >= 16 && (uint8_t)in[0] == 0x82 && in[1] == 'S' && in[2] == 'N') {
+      const uint8_t *p = in + 16, *end = in + inlen;
+      int outpos = 0;
+      while (p + 4 <= end) {
+        uint32_t blk = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                       ((uint32_t)p[2] << 8) | p[3];
+        p += 4;
+        if (p + blk > end) break;
+        size_t got = (size_t)(outcap - outpos);
+        if (snappy_uncompress((const char *)p, blk, (char *)out + outpos, &got) != SNAPPY_OK) break;
+        outpos += (int)got;
+        p += blk;
+      }
+      return outpos > 0 ? outpos : -1;
+    }
+    /* Fall back to a single raw snappy block. */
+    size_t got = (size_t)outcap;
+    if (snappy_uncompress((const char *)in, inlen, (char *)out, &got) == SNAPPY_OK) return (int)got;
+    return -1;
+  }
+  return -1;
 }
 
 /* ----- record-level callback ----- */

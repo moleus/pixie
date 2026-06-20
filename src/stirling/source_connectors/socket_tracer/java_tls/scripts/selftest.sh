@@ -42,14 +42,16 @@ produce() { # codec, payload-lines
     --producer-property "compression.type=$1" --producer-property batch.size=16384 \
     --producer-property linger.ms=80 --producer.config "$CLIENT_CFG" >/dev/null 2>&1
 }
-produce none 'st-none:SELFTEST_VALUE_NONE\n'
-produce gzip 'st-gzip-1:SELFTEST_VALUE_GZIP_A\nst-gzip-2:SELFTEST_VALUE_GZIP_B\n'
-produce zstd 'st-zstd-1:SELFTEST_VALUE_ZSTD_A\nst-zstd-2:SELFTEST_VALUE_ZSTD_B\n'
-produce lz4  'st-lz4-1:SELFTEST_VALUE_LZ4_A\nst-lz4-2:SELFTEST_VALUE_LZ4_B\n'
+produce none   'st-none:SELFTEST_VALUE_NONE\n'
+produce gzip   'st-gzip-1:SELFTEST_VALUE_GZIP_A\nst-gzip-2:SELFTEST_VALUE_GZIP_B\n'
+produce zstd   'st-zstd-1:SELFTEST_VALUE_ZSTD_A\nst-zstd-2:SELFTEST_VALUE_ZSTD_B\n'
+produce lz4    'st-lz4-1:SELFTEST_VALUE_LZ4_A\nst-lz4-2:SELFTEST_VALUE_LZ4_B\n'
+produce snappy 'st-snap-1:SELFTEST_VALUE_SNAPPY_A\nst-snap-2:SELFTEST_VALUE_SNAPPY_B\n'
 wait $CPID
 
 EXPECT=(SELFTEST_VALUE_NONE SELFTEST_VALUE_GZIP_A SELFTEST_VALUE_GZIP_B \
-        SELFTEST_VALUE_ZSTD_A SELFTEST_VALUE_ZSTD_B SELFTEST_VALUE_LZ4_A SELFTEST_VALUE_LZ4_B)
+        SELFTEST_VALUE_ZSTD_A SELFTEST_VALUE_ZSTD_B SELFTEST_VALUE_LZ4_A SELFTEST_VALUE_LZ4_B \
+        SELFTEST_VALUE_SNAPPY_A SELFTEST_VALUE_SNAPPY_B)
 fail=0
 echo "---- self-test results ----"
 for e in "${EXPECT[@]}"; do

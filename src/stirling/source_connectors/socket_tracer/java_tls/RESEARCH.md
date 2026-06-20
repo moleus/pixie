@@ -187,10 +187,11 @@ Pixie's own parser:
 - **Compression is real and Pixie doesn't handle it.** RecordBatch `attributes`
   bits 0–2 select gzip/snappy/lz4/zstd; the records blob after the batch header is
   then a single compressed stream. Pixie reads the attributes but not the payload,
-  so compressed batches yield no records there. Our parser decompresses **gzip
-  (zlib, windowBits 31)** and **zstd (libzstd)** in-place and re-parses; snappy/lz4
-  are detected and noted (headers/libs not present on this host). Verified by
-  producing with `compression.type=gzip|zstd` and recovering the records.
+  so compressed batches yield no records there. Our parser decompresses **all four
+  codecs** in-place and re-parses: **gzip** (zlib, windowBits 31), **zstd**
+  (libzstd), **lz4** (liblz4 frame API), and **snappy** (libsnappy, including
+  Kafka's xerial block framing). Verified by producing with
+  `compression.type=gzip|zstd|lz4|snappy` and recovering every record.
 - **A capture-size mask must clamp, not wrap.** The collector's BPF masked the
   capture length with `len &= (MAX-1)` for the verifier; for `len >= MAX` that
   *wraps* (a 4096-byte message → 0 captured). Correct form is clamp-then-mask:
