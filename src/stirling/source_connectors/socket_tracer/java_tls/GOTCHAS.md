@@ -155,6 +155,24 @@ in-JVM and hands it to a stable native uprobe target. Kafka specifically uses
   `[start, position)` on exit.
 - **One hook covers vectored writes.** `write(ByteBuffer[])` delegates to
   `write(ByteBuffer)` internally, so hooking the single-buffer method suffices.
+- **To instrument `java.base` (the generic SSLEngine hook), put ONLY your helper
+  classes on the bootstrap loader — never ByteBuddy.** Advice woven into a
+  `java.base` class resolves the classes it calls (here: `PixieCapture`,
+  `EngineContext`, `NativeBridge`, `FdExtractor`) via the bootstrap loader, so those
+  must be reachable there. The tempting shortcut —
+  `appendToBootstrapClassLoaderSearch(theWholeAgentJar)` — also puts the *shaded
+  ByteBuddy* on bootstrap, duplicating it on both the app and bootstrap loaders. The
+  first `AgentBuilder` call then dies with
+  `LinkageError: loader constraint violation … ElementMatcher … different Class
+  objects`. Fix: build a tiny temp jar with just the helper classes and append that;
+  ByteBuddy + the agent orchestration stay app-only, and parent-first delegation
+  gives a single copy of each helper (so even the Kafka-mode advice and the
+  engine-mode advice share one `EngineContext.inTransport` for dedup).
+- **A bare `SSLEngine` has no socket → no fd.** That, not the byte capture, is what
+  makes a *generic* JSSE hook hard. Recover the fd from a thread-local that
+  `sun.nio.ch.SocketChannelImpl.read/write` sets on the same thread (the NIO
+  event-loop runs the engine op and the socket op back-to-back). If no fd is known,
+  skip — never guess. Validated: engine mode recovers all five Kafka codecs.
 
 ## 9. Kafka wire-protocol versioning will silently break a parser
 

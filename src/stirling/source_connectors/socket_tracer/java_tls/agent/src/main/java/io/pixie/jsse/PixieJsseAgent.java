@@ -22,13 +22,17 @@ import static net.bytebuddy.matcher.ElementMatchers.takesArgument;
 import static net.bytebuddy.matcher.ElementMatchers.takesArguments;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
 import java.lang.instrument.Instrumentation;
 import java.nio.ByteBuffer;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.jar.JarOutputStream;
 
 import net.bytebuddy.agent.builder.AgentBuilder;
 import net.bytebuddy.asm.Advice;
@@ -84,7 +88,7 @@ public final class PixieJsseAgent {
       // bootstrap classloader. Do this FIRST so all helper references resolve to the
       // single bootstrap copy (parent-first delegation) — one set of static state.
       if (engine) {
-        injectIntoBootstrap(inst);
+        injectHelpersIntoBootstrap(inst);
       }
 
       openJavaBasePackages(inst);
@@ -147,16 +151,57 @@ public final class PixieJsseAgent {
     }
   }
 
-  /** Put the (shaded) agent jar on the bootstrap classloader search so advice woven
-   *  into java.base classes can resolve our helper classes. */
-  private static void injectIntoBootstrap(Instrumentation inst) {
+  // The ONLY classes that the advice woven into java.base actually calls at
+  // runtime. Everything else (PixieJsseAgent, the advice classes, and all of
+  // ByteBuddy) stays on the app/system loader.
+  private static final String[] BOOTSTRAP_HELPERS = {
+    "io/pixie/jsse/NativeBridge",
+    "io/pixie/jsse/FdExtractor",
+    "io/pixie/jsse/EngineContext",
+    "io/pixie/jsse/PixieCapture",
+  };
+
+  /**
+   * Put ONLY the small runtime helper classes onto the bootstrap classloader so
+   * advice woven into {@code java.base} can resolve them.
+   *
+   * <p>The obvious approach — appending the whole shaded agent jar to bootstrap —
+   * is the trap: it duplicates ByteBuddy on BOTH the app and bootstrap loaders, so
+   * the first {@code AgentBuilder} call from {@code PixieJsseAgent} (app loader)
+   * blows up with a {@code LinkageError: loader constraint violation} because the
+   * two loaders disagree on the {@code ElementMatcher} type. We instead build a
+   * tiny jar containing just the four helpers and append that. Parent-first
+   * delegation then makes every reference to these classes — whether from
+   * java.base-woven advice or app-loaded (Kafka) advice — resolve to the single
+   * bootstrap copy, so there is exactly one set of static state and no duplication.
+   */
+  private static void injectHelpersIntoBootstrap(Instrumentation inst) {
     try {
-      File jar =
-          new File(PixieJsseAgent.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+      ClassLoader cl = PixieJsseAgent.class.getClassLoader();
+      File jar = File.createTempFile("pixie-jsse-boot", ".jar");
+      jar.deleteOnExit();
+      try (JarOutputStream jos = new JarOutputStream(new FileOutputStream(jar))) {
+        byte[] buf = new byte[8192];
+        for (String name : BOOTSTRAP_HELPERS) {
+          String res = name + ".class";
+          try (InputStream in = cl.getResourceAsStream(res)) {
+            if (in == null) {
+              log("WARN: bootstrap helper class not found on agent classpath: " + res);
+              continue;
+            }
+            jos.putNextEntry(new JarEntry(res));
+            int n;
+            while ((n = in.read(buf)) > 0) {
+              jos.write(buf, 0, n);
+            }
+            jos.closeEntry();
+          }
+        }
+      }
       inst.appendToBootstrapClassLoaderSearch(new JarFile(jar));
-      log("agent jar appended to bootstrap classloader search: " + jar);
+      log("bootstrap helper jar appended (" + BOOTSTRAP_HELPERS.length + " classes): " + jar);
     } catch (Throwable t) {
-      log("could not append to bootstrap search (engine mode may not work): " + t);
+      log("could not inject bootstrap helpers (engine mode may not work): " + t);
     }
   }
 
