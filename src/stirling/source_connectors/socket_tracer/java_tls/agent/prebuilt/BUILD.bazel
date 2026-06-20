@@ -1,0 +1,19 @@
+# Copyright 2018- The Pixie Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+package(default_visibility = ["//src/stirling:__subpackages__"])
+
+# Prebuilt, shaded pixie-jsse Java agent jar (arch-independent), baked into the PEM image and
+# injected into broker JVMs by px_jattach (load instrument false <jar>=<so>). It is committed as
+# a binary because Pixie's hermetic Bazel has no Maven build path for the ByteBuddy dependency;
+# the CI workflow .github/workflows/java-tls-artifacts.yaml is the source of truth and rebuilds
+# it from ../ (agent/) on every change. Regenerate after editing the agent:
+#   (cd .. && mvn -B -ntp clean package) && cp ../target/pixie-jsse-agent.jar pixie-jsse-agent.jar
+filegroup(
+    name = "agent_jar",
+    srcs = ["pixie-jsse-agent.jar"],
+    visibility = [
+        "//:__pkg__",
+        "//src/stirling:__subpackages__",
+    ],
+)

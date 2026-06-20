@@ -57,6 +57,15 @@ DEFINE_string(
     "Comma separated list of binary filenames that should be excluded from uprobe attachment."
     "For a binary at path /path/to/binary, the filename would be binary");
 
+DEFINE_bool(stirling_enable_java_tls_injection, true,
+            "If true, the PEM auto-injects the pixie-jsse Java agent into JVMs (via px_jattach) so "
+            "Kafka/JVM TLS plaintext is captured with no broker restart or broker-side config.");
+DEFINE_string(stirling_pixie_jsse_agent_jar, "/px/pixie-jsse-agent.jar",
+              "Path (inside the PEM image) to the pixie-jsse Java agent jar to inject.");
+DEFINE_string(stirling_pixie_jsse_native_libs, "/px/libpixie_jsse.so",
+              "Comma-separated path(s), inside the PEM image, to the pixie-jsse native bridge .so "
+              "the agent System.load()s. px_jattach picks the first that links in the target JVM.");
+
 namespace px {
 namespace stirling {
 
@@ -730,6 +739,9 @@ StatusOr<int> UProbeManager::AttachJavaTLSUProbes(uint32_t pid) {
 int UProbeManager::DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pids) {
   int uprobe_count = 0;
 
+  // Reap any injector subprocesses started on previous cycles (zombie cleanup + outcome log).
+  ReapJavaTLSAttachers();
+
   for (const auto& pid : pids) {
     if (cfg_disable_self_probing_ && pid.pid() == static_cast<uint32_t>(getpid())) {
       continue;
@@ -746,8 +758,14 @@ int UProbeManager::DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pid
     auto count_or = AttachJavaTLSUProbes(pid.pid());
     if (count_or.ok()) {
       uprobe_count += count_or.ValueOrDie();
-      VLOG(1) << absl::Substitute("Attaching JVM/JSSE uprobes succeeded for PID $0: $1 probes",
-                                  pid.pid(), count_or.ValueOrDie());
+      if (count_or.ValueOrDie() == 0) {
+        // The agent's native lib isn't mapped yet. Inject the pixie-jsse agent (once per JVM);
+        // a later rescan attaches the uprobe after the agent loads its .so.
+        MaybeInjectJavaTLSAgent(pid);
+      } else {
+        VLOG(1) << absl::Substitute("Attaching JVM/JSSE uprobes succeeded for PID $0: $1 probes",
+                                    pid.pid(), count_or.ValueOrDie());
+      }
     } else {
       monitor_.AppendSourceStatusRecord("socket_tracer", count_or.status(), "AttachJavaTLSUProbes");
       VLOG(1) << absl::Substitute("Attaching JVM/JSSE uprobes failed for PID $0: $1", pid.pid(),
@@ -756,6 +774,61 @@ int UProbeManager::DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pid
   }
 
   return uprobe_count;
+}
+
+void UProbeManager::ReapJavaTLSAttachers() {
+  for (auto it = java_tls_attachers_.begin(); it != java_tls_attachers_.end();) {
+    if ((*it)->Finished()) {
+      VLOG(1) << absl::Substitute("pixie-jsse: injector finished (attached=$0)", (*it)->attached());
+      it = java_tls_attachers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void UProbeManager::MaybeInjectJavaTLSAgent(const md::UPID& upid) {
+  if (!FLAGS_stirling_enable_java_tls_injection) {
+    return;
+  }
+
+  // At most one injection attempt per JVM (keyed pid + start_time).
+  if (java_tls_inject_attempted_.contains(upid)) {
+    return;
+  }
+
+  // If the agent's native lib is already mapped (broker started with -javaagent, or a prior
+  // injection already took), there is nothing to inject — the rescan attaches the uprobe.
+  const std::vector<std::string_view> lib_names = {kLibPixieJSSE};
+  auto lib_paths_or = FindHostPathForPIDLibs(lib_names, upid.pid(), proc_parser_.get(),
+                                             HostPathForPIDPathSearchType::kSearchTypeEndsWith);
+  if (lib_paths_or.ok() && !lib_paths_or.ValueOrDie().empty() &&
+      !lib_paths_or.ValueOrDie()[0].empty()) {
+    java_tls_inject_attempted_.insert(upid);
+    return;
+  }
+
+  // The agent artifacts must be present in the PEM image.
+  const std::filesystem::path jar = FLAGS_stirling_pixie_jsse_agent_jar;
+  if (!fs::Exists(jar)) {
+    LOG_FIRST_N(WARNING, 1) << absl::Substitute(
+        "pixie-jsse injection enabled but agent jar missing ($0); skipping.", jar.string());
+    java_tls_inject_attempted_.insert(upid);  // don't retry every cycle
+    return;
+  }
+
+  // Mark before forking so a failure doesn't cause a tight re-inject loop.
+  java_tls_inject_attempted_.insert(upid);
+
+  const struct upid_t target_upid = {{upid.pid()}, static_cast<uint64_t>(upid.start_ts())};
+  // Pass jar + candidate native lib(s); px_jattach loads the jar via the JVM's `instrument`
+  // agent and hands the agent the .so path to System.load().
+  const std::string agent_libs =
+      absl::StrCat(FLAGS_stirling_pixie_jsse_agent_jar, ",", FLAGS_stirling_pixie_jsse_native_libs);
+  java_tls_attachers_.push_back(std::make_unique<java::AgentAttacher>(target_upid, agent_libs));
+  LOG(INFO) << absl::Substitute("pixie-jsse: injecting agent into JVM pid=$0 (jar=$1, libs=$2)",
+                                upid.pid(), FLAGS_stirling_pixie_jsse_agent_jar,
+                                FLAGS_stirling_pixie_jsse_native_libs);
 }
 
 StatusOr<std::string> UProbeManager::MD5onFile(const std::string& file) {

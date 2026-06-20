@@ -47,6 +47,8 @@ namespace px {
 namespace stirling {
 namespace java {
 
+using ::px::system::ProcPidRootPath;
+
 namespace {
 StatusOr<uint32_t> GetNSPid(const int pid) {
   const system::ProcParser proc_parser;
@@ -93,6 +95,37 @@ bool TestDLOpen(const std::string& so_lib_file_path) {
     return false;
   }
   VLOG(1) << absl::Substitute("TestDLOpen(): Success for $0.", so_lib_file_path);
+  return true;
+}
+
+// ---- Java-agent (pixie-jsse) helpers --------------------------------------------------------
+// These support loading a *Java agent jar* (vs. a JVMTI .so) via jattach's built-in `instrument`
+// agent. They deliberately use a SEPARATE artifacts path from the JVMTI symbolization flow so a
+// single JVM can be both profiled (JVMTI .so) and TLS-traced (jsse .jar) without path collisions.
+
+bool IsJar(const std::filesystem::path& p) { return p.extension() == ".jar"; }
+
+// The pixie-jsse artifacts dir as seen FROM the target's mount namespace (a plain /tmp path).
+// Passed to the JVM `instrument` agent, which resolves it inside the broker.
+std::filesystem::path JSSEArtifactsArg(const struct upid_t& upid) {
+  return absl::Substitute("/tmp/px-jsse-agent-$0-$1", upid.pid, upid.start_time_ticks);
+}
+
+// The same dir as seen FROM stirling (via /proc/<pid>/root/tmp), used to stage the files.
+std::filesystem::path JSSEArtifactsInTarget(const struct upid_t& upid) {
+  return ProcPidRootPath(
+      upid.pid, "tmp", absl::Substitute("px-jsse-agent-$0-$1", upid.pid, upid.start_time_ticks));
+}
+
+// Loadability check only (no PixieJavaAgentTestFn requirement): a proxy for "the JVM will be
+// able to System.load() this .so against the libc in the target namespace".
+bool CanDLOpen(const std::string& so_path) {
+  dlerror();
+  void* h = dlopen(so_path.c_str(), RTLD_LAZY);
+  if (h == nullptr) {
+    VLOG(1) << absl::Substitute("CanDLOpen() failure for $0: $1", so_path, dlerror());
+    return false;
+  }
   return true;
 }
 }  // namespace
@@ -197,43 +230,93 @@ void AgentAttachApp::SelectLibWithDLOpenOrDie() {
 }
 
 void AgentAttachApp::AttachOrDie() {
-  // Two attach modes, distinguished by whether a Java agent jar is among the libs:
-  //
-  //  * JVMTI agent (default, used by the profiler's symbolization agent): load the native
-  //    .so directly as a JVMTI agent — `jattach <pid> load <lib.so> true <args>`.
-  //
-  //  * Java agent jar (used by the JSSE TLS-tracing agent): load the jar through the JVM's
-  //    built-in `instrument` agent (the JPLIS implementation that backs `-javaagent`) —
-  //    `jattach <pid> load instrument false <jar>=<args>`. The jar's agentmain runs and
-  //    System.load()s the native .so, so we pass the selected (dlopen-validated) .so path
-  //    as the agent argument. This is the documented jattach mechanism for loading a Java
-  //    agent into a running JVM, and works on already-loaded classes via retransformation.
-  std::filesystem::path agent_jar;
-  for (const auto& lib : agent_libs_) {
-    if (lib.extension() == ".jar") {
-      agent_jar = lib;
-      break;
-    }
-  }
-
-  constexpr int argc = 4;
-  if (!agent_jar.empty()) {
-    const std::string instrument_opts = absl::Substitute("$0=$1", agent_jar.string(), lib_so_path_);
-    const char* argv[argc] = {"load", "instrument", "false", instrument_opts.c_str()};
-    const int r = jattach(target_upid_.pid, argc, argv);
-    char const* const msg = "AgentAttachApp finished (java agent). pid: $0, jar: $1, lib: $2, exit: $3";
-    LOG(INFO) << absl::Substitute(msg, target_upid_.pid, agent_jar, lib_so_path_, r);
-    if (r != 0) {
-      std::exit(r);
-    }
-    return;
-  }
-
   const std::string argent_args = AgentArtifactsPathArg(target_upid_).string();
+  constexpr int argc = 4;
   const char* argv[argc] = {"load", lib_so_path_.c_str(), "true", argent_args.c_str()};
   const int r = jattach(target_upid_.pid, argc, argv);
   char const* const msg = "AgentAttachApp finished. pid: $0, lib: $1, exit code: $2";
   LOG(INFO) << absl::Substitute(msg, target_upid_.pid, lib_so_path_, r);
+  if (r != 0) {
+    std::exit(r);
+  }
+}
+
+bool AgentAttachApp::IsJavaAgentMode() const {
+  return std::any_of(agent_libs_.begin(), agent_libs_.end(),
+                     [](const std::filesystem::path& p) { return IsJar(p); });
+}
+
+void AgentAttachApp::CreateJSSEArtifactsPathOrDie() {
+  // Staging dir for the jsse jar + native .so inside the target's mount namespace. Unlike the
+  // JVMTI path, there is no symbol-file conflict to detect, so a pre-existing dir is fine
+  // (idempotent re-injection just overwrites).
+  const std::filesystem::path artifacts_path = JSSEArtifactsInTarget(target_upid_);
+  if (!fs::Exists(artifacts_path)) {
+    PX_EXIT_IF_ERROR(fs::CreateDirectories(artifacts_path));
+    PX_EXIT_IF_ERROR(fs::Chown(artifacts_path, target_uid_, target_gid_));
+  }
+}
+
+void AgentAttachApp::CopyJSSELibsOrDie() {
+  // Copy the jar + .so into the target namespace's /tmp and chown to the target uid/gid (some
+  // JVMs refuse to load agent files they don't own), then rewrite agent_libs_ to the paths the
+  // TARGET process will see (plain /tmp/...).
+  const auto copy_options = std::filesystem::copy_options::overwrite_existing;
+  const std::filesystem::path artifacts_in_target = JSSEArtifactsInTarget(target_upid_);
+  for (std::filesystem::path& lib : agent_libs_) {
+    const std::filesystem::path dst_path = artifacts_in_target / lib.filename();
+    PX_EXIT_IF_ERROR(fs::Copy(lib, dst_path, copy_options));
+    PX_EXIT_IF_ERROR(fs::Chown(dst_path, target_uid_, target_gid_));
+    lib = JSSEArtifactsArg(target_upid_) / lib.filename();
+  }
+}
+
+void AgentAttachApp::AttachJavaAgentOrDie() {
+  // Identify the agent jar, then pick a loadable native .so among the remaining libs (entering
+  // the target namespace so dlopen resolves against the libc that is actually present there).
+  std::filesystem::path jar;
+  for (const auto& lib : agent_libs_) {
+    if (IsJar(lib)) {
+      jar = lib;
+      break;
+    }
+  }
+  if (jar.empty()) {
+    LOG(FATAL) << "Java-agent mode selected, but no .jar found among the agent libs.";
+  }
+
+  std::string selected_so;
+  {
+    PX_ASSIGN_OR(std::unique_ptr<system::ScopedNamespace> pid_scoped_namespace,
+                 system::ScopedNamespace::Create(target_upid_.pid, "pid"),
+                 { LOG(FATAL) << "Could not enter pid namespace."; });
+    PX_ASSIGN_OR(std::unique_ptr<system::ScopedNamespace> mnt_scoped_namespace,
+                 system::ScopedNamespace::Create(target_upid_.pid, "mnt"),
+                 { LOG(FATAL) << "Could not enter mnt namespace."; });
+    for (const std::filesystem::path& lib : agent_libs_) {
+      if (IsJar(lib)) {
+        continue;
+      }
+      if (CanDLOpen(lib.string())) {
+        selected_so = lib.string();
+        break;
+      }
+      VLOG(1) << absl::Substitute("AttachJavaAgentOrDie(): $0 not loadable here, next.", lib);
+    }
+  }
+  if (selected_so.empty()) {
+    LOG(FATAL) << "Could not find a loadable native .so for the pixie-jsse agent.";
+  }
+
+  // jattach `load instrument false "<jar>=<opts>"`: the JVM's built-in JPLIS (`instrument`) agent
+  // loads <jar> as a Java agent and calls agentmain(<opts>). The pixie-jsse agent treats <opts>
+  // as the path to the native .so it must System.load(). No broker restart, no broker config.
+  const std::string opts = absl::Substitute("$0=$1", jar.string(), selected_so);
+  constexpr int argc = 4;
+  const char* argv[argc] = {"load", "instrument", "false", opts.c_str()};
+  const int r = jattach(target_upid_.pid, argc, argv);
+  char const* const msg = "pixie-jsse agent attach finished. pid: $0, jar: $1, so: $2, exit: $3";
+  LOG(INFO) << absl::Substitute(msg, target_upid_.pid, jar.string(), selected_so, r);
   if (r != 0) {
     std::exit(r);
   }
@@ -252,6 +335,17 @@ void AgentAttachApp::Attach() {
   VLOG(1) << absl::Substitute(msg, target_upid_.pid, target_ns_pid);
 
   SetTargetUIDAndGIDOrDie();
+
+  // Java-agent (pixie-jsse .jar) vs. JVMTI (.so) injection take separate, non-colliding paths.
+  if (IsJavaAgentMode()) {
+    CreateJSSEArtifactsPathOrDie();
+    if (target_ns_pid != target_upid_.pid) {
+      CopyJSSELibsOrDie();
+    }
+    AttachJavaAgentOrDie();
+    return;
+  }
+
   CreateArtifactsPathOrDie();
 
   if (target_ns_pid != target_upid_.pid) {

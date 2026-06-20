@@ -87,13 +87,21 @@ stirling_java_profiling_tools = [
     "//src/stirling/source_connectors/perf_profiler/java/agent:agent",
 ]
 
+# Baked into /px so the PEM can auto-inject the pixie-jsse TLS agent into broker JVMs
+# (via px_jattach) with no broker-side install. Lands at /px/pixie-jsse-agent.jar and
+# /px/libpixie_jsse.so — the defaults of --stirling_pixie_jsse_agent_jar / _native_libs.
+stirling_java_tls_tools = [
+    "//src/stirling/source_connectors/socket_tracer/java_tls/agent/prebuilt:agent_jar",
+    "//src/stirling/source_connectors/socket_tracer/java_tls/native:native_lib",
+]
+
 # Use this binary to dynamically turn on/off Stirling runtime's debug logging.
 # See src/stirling/e2e_tests/stirling_signal_test.sh for its usage.
 stirling_ctrl = [
     "//src/stirling/binaries:stirling_ctrl",
 ]
 
-stirling_collateral = [":stirling_linux_timeconst_files"] + stirling_ctrl + stirling_java_profiling_tools
+stirling_collateral = [":stirling_linux_timeconst_files"] + stirling_ctrl + stirling_java_profiling_tools + stirling_java_tls_tools
 
 container_layer(
     name = "bpf_layer",

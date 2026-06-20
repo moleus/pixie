@@ -1,0 +1,40 @@
+# Copyright 2018- The Pixie Authors.
+# SPDX-License-Identifier: Apache-2.0
+
+load("//bazel:pl_build_system.bzl", "pl_cc_musl_binary")
+
+package(default_visibility = ["//src/stirling:__subpackages__"])
+
+# The pixie-jsse native bridge: the JNI glue (pixie_jsse_bridge.c) + the stable eBPF uprobe
+# trampoline pixie_jsse_plaintext (pixie_jsse_trampoline.c). Shipped in the PEM image and
+# injected (with the agent jar) into broker JVMs by px_jattach.
+#
+# Built musl-static (fully_static_link) so the single .so loads into a broker JVM regardless of
+# the broker's libc (glibc or musl) — exactly how the profiler's JVMTI agent achieves portability,
+# which lets us ship ONE .so per arch instead of glibc/musl variants.
+#
+# IMPORTANT: the trampoline and the JNI glue are SEPARATE translation units (two srcs) so the
+# call into pixie_jsse_plaintext() is a real cross-TU call that honors the platform C ABI — the
+# uprobe reads the args (fd, direction, buf, len) from registers at the call boundary.
+# pixie_jsse_plaintext is also __attribute__((noinline)) + visibility("default"), which preserves
+# the exported call site even if link-time optimization is ever enabled.
+pl_cc_musl_binary(
+    name = "libpixie_jsse.so",
+    srcs = [
+        "pixie_jsse_bridge.c",
+        "pixie_jsse_trampoline.c",
+    ],
+    features = ["fully_static_link"],
+    linkshared = True,
+    deps = ["@com_oracle_openjdk_18//:jdk_includes"],
+)
+
+filegroup(
+    name = "native_lib",
+    srcs = ["libpixie_jsse.so"],
+    visibility = [
+        # Visible at top-level + across stirling so it can be baked into the PEM image.
+        "//:__pkg__",
+        "//src/stirling:__subpackages__",
+    ],
+)

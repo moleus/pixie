@@ -36,6 +36,8 @@ pl_cc_library(
         "//src/stirling/bpf_tools:cc_library",
         "//src/stirling/core:cc_library",
         "//src/stirling/obj_tools:cc_library",
+        # AgentAttacher/px_jattach reuse: inject the pixie-jsse Java agent into JVMs.
+        "//src/stirling/source_connectors/perf_profiler/java:cc_library",
         "//src/stirling/source_connectors/socket_tracer/bcc_bpf:socket_trace",
         "//src/stirling/source_connectors/socket_tracer/bcc_bpf_intf:cc_library",
         "//src/stirling/source_connectors/socket_tracer/proto:sock_event_pl_cc_proto",

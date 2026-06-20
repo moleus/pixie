@@ -32,6 +32,7 @@
 #include "src/stirling/obj_tools/dwarf_reader.h"
 #include "src/stirling/obj_tools/elf_reader.h"
 #include "src/stirling/obj_tools/raw_fptr_manager.h"
+#include "src/stirling/source_connectors/perf_profiler/java/attach.h"
 
 #include "src/stirling/source_connectors/socket_tracer/bcc_bpf_intf/grpc_c.h"
 #include "src/stirling/source_connectors/socket_tracer/bcc_bpf_intf/socket_trace.hpp"
@@ -513,6 +514,18 @@ class UProbeManager {
   StatusOr<int> AttachJavaTLSUProbes(uint32_t pid);
 
   /**
+   * Auto-injects the pixie-jsse Java agent (jar + native .so, shipped in the PEM image) into a
+   * running JVM via px_jattach, so Kafka/JVM-over-TLS capture works with no broker restart or
+   * broker-side config. No-op if injection is disabled, already attempted for this JVM, or the
+   * agent's library is already mapped. The actual uprobe is attached on a later rescan once the
+   * agent has loaded its .so. Fire-and-forget; children are reaped by ReapJavaTLSAttachers().
+   */
+  void MaybeInjectJavaTLSAgent(const md::UPID& upid);
+
+  // Reaps finished async px_jattach injector children (zombie cleanup + outcome logging).
+  void ReapJavaTLSAttachers();
+
+  /**
    * Sets up the BPF maps used for GOID tracking. Required for general Go tracing.
    *
    * @param binary The path to the binary on which to deploy Go probes.
@@ -666,6 +679,10 @@ class UProbeManager {
   absl::flat_hash_set<std::string> nodejs_binaries_;
   absl::flat_hash_set<std::string> grpc_c_probed_binaries_;
   absl::flat_hash_set<std::string> java_tls_probed_binaries_;
+  // JVMs we've already tried to inject the pixie-jsse agent into (keyed pid+start_time), so we
+  // attempt at most once per process. In-flight injector subprocesses, retained for reaping.
+  absl::flat_hash_set<md::UPID> java_tls_inject_attempted_;
+  std::vector<std::unique_ptr<java::AgentAttacher>> java_tls_attachers_;
 
   // BPF maps through which the addresses of symbols for a given pid are communicated to uprobes.
   std::unique_ptr<MapT<ssl_source_t>> openssl_source_map_;

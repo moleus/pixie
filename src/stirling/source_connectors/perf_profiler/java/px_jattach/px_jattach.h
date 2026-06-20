@@ -47,6 +47,14 @@ class AgentAttachApp {
   void SelectLibWithDLOpenOrDie();
   void AttachOrDie();
 
+  // Java-agent mode (load a .jar via the JVM's built-in `instrument` agent), used by the
+  // socket_tracer to inject the pixie-jsse TLS agent. Distinct from the JVMTI .so path above
+  // (different artifacts dir, no PixieJavaAgentTestFn requirement) so the two never collide.
+  bool IsJavaAgentMode() const;
+  void CreateJSSEArtifactsPathOrDie();
+  void CopyJSSELibsOrDie();
+  void AttachJavaAgentOrDie();
+
   const struct upid_t target_upid_;
   std::vector<std::filesystem::path> agent_libs_;
   std::string lib_so_path_;
