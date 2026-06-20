@@ -85,6 +85,7 @@ jobs:
           bazel-x86dt-
           bazel-x86-
     - name: Bazel config
+      shell: bash
       run: |
         {
           echo "build --disk_cache=/root/.cache/bazel-disk"
@@ -132,6 +133,7 @@ jobs:
           bazel-x86pem-
           bazel-x86-
     - name: Bazel config
+      shell: bash
       run: |
         {
           echo "build --disk_cache=/root/.cache/bazel-disk"
@@ -188,6 +190,7 @@ jobs:
         key: bazel-arm-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
         restore-keys: bazel-arm-
     - name: Bazel config
+      shell: bash
       run: |
         {
           echo "build --disk_cache=/root/.cache/bazel-disk"
