@@ -114,6 +114,39 @@ can't easily write to a BPF ring buffer, and keeping *all* policy in eBPF (the
 trampoline is an empty function) means the injected native surface ships no Pixie
 logic and the broker pays only an empty call.
 
+### Getting the agent in: `-javaagent` vs runtime attach (chosen: both)
+
+The agent can enter the JVM two ways, and "no broker modification" is satisfied by
+either:
+
+1. **Launch-time `-javaagent`** (via `KAFKA_OPTS`) — simple, but it needs an operator
+   to edit the broker's startup env and restart it. Fine for local testing.
+2. **Runtime attach (JVM Attach API)** — load the agent into an *already-running* JVM,
+   no restart, no env change. This is what `jcmd`/`jstack` use and what makes the
+   feature genuinely zero-touch.
+
+Pixie already ships the hard part of (2): the profiler's `px_jattach` enters a target
+JVM's PID+mount namespaces (`setns`), copies artifacts into the target's filesystem
+view, and calls `jattach` to load a JVMTI agent for symbolization. The Attach API
+also supports loading a `java.lang.instrument` agent jar (`jattach <pid> load
+instrument false "<jar>=<opts>"`), which is exactly our ByteBuddy agent. So we
+**extended `px_jattach` with an `instrument` mode** and trigger it from
+`uprobe_manager` — the PEM injects the baked agent itself (see README, "PEM-side
+auto-injection"). Two implementation subtleties made this non-trivial:
+
+- **Retransformation, not rebase.** Loading the agent at *runtime* means its advice is
+  woven into *already-loaded* classes via JVMTI `RetransformClasses`, which forbids
+  adding/removing methods. ByteBuddy's default REBASE adds methods → the JVM silently
+  rejects the transform and no plaintext is captured. The agent must
+  `disableClassFormatChanges()` (REDEFINE) so the same code path works whether it
+  attaches at launch (premain) or at runtime (agentmain). Proven with an A/B test.
+- **Don't reuse the profiler's selection/artifacts paths.** `px_jattach`'s
+  `SelectLibWithDLOpenOrDie` hard-requires the `.so` to export the profiler's
+  `PixieJavaAgentTestFn`; a generic agent `.so` lacks it (would FATAL). And its
+  JVMTI artifacts dir is keyed per JVM with conflict detection — reusing it collides
+  when a JVM is *both* profiled and TLS-traced. The instrument mode uses a
+  loadability-only `dlopen` check and a separate `px-jsse-agent-*` dir.
+
 ## 4. Empirical findings / gotchas (validated on Linux 6.18, no kernel BTF)
 
 These were found by building the chain incrementally on a minimal host (no
