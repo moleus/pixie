@@ -84,3 +84,31 @@ The tree already wires a qemu test runner:
 cross-compiles and runs the test under qemu via `bazel/test_runners/sysroot_chroot`.
 This needs the Bazel dependency downloads to succeed (a proxy/CA that the build
 trusts); where that is unavailable, steps 1–4 give the same coverage offline.
+
+## 7. Property-based testing of the ABI model
+Compile the real `abi_model.cc` (shim as in §3), then drive `PopLocation` with
+random call sequences (random `TypeClass`, size, alignment, num_vars, is_ret_arg;
+random ABI) and assert invariants that must hold for *any* input/arch:
+
+- stack offsets are aligned to the requested alignment and are monotonic /
+  non-overlapping;
+- a register location's byte span stays inside the codegen register array
+  (`offset + nregs*8 <= table*8`) — guards against OOB in the generated BPF;
+- register offsets are multiples of the register size; register locs carry ≥1
+  register, stack locs carry none;
+- register names belong to the right *class* (int vs fp) and the right *arch*
+  (amd64 enums on x86, arm64 enums under qemu);
+- replaying a sequence is deterministic.
+
+Build with `-D_GLIBCXX_ASSERTIONS -fsanitize=address,undefined` so container
+bugs surface as a hard failure with the exact location. This found a real
+undefined-behavior bug: the System V hidden-return-pointer path read
+`int_arg_registers_.front()` on an empty `std::deque` once all integer argument
+registers were consumed (now fixed; see `abi_model.cc` and the
+`ReturnValueAfterArgRegistersExhausted` regression test). The same harness
+shrinks to a deterministic reproducer by replaying the offending sequence.
+
+For pure parsers/decoders (e.g. `java_tls/collector/kafka_parser.h`), the same
+philosophy applies: round-trip properties (`parse(build(x)) == x`,
+`decompress(compress(x)) == x`) plus an ASan+UBSan fuzz over truncated / mutated
+/ random inputs — see `java_tls/collector/tests/`.
