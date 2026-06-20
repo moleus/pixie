@@ -61,6 +61,11 @@ permissions:
 
 env:
   IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
+  # OPTIONAL shared remote cache. Set repo secret BB_API_KEY (a free BuildBuddy org key, or any
+  # bazel-remote/EngFlow key) to give EVERY branch ONE shared read+write Bazel cache, so cold
+  # starts nearly vanish (any branch's build warms the cache for all). Empty => local disk cache
+  # only (no remote dependency, current behavior). See the "remote cache" step in each build job.
+  BB_API_KEY: ${{ secrets.BB_API_KEY }}
   # Scope every Bazel invocation to the dynamic-tracing surface the fix touches, so the
   # build fits comfortably in a free runner + warm cache.
   DT_TARGETS: >-
@@ -103,6 +108,17 @@ jobs:
         # and bound the disk cache so it stays under GitHub's 10 GB/repo limit.
         echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
         echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
+        # Optional shared remote cache: one read+write cache across ALL branches (see env BB_API_KEY).
+        if [[ -n "${BB_API_KEY:-}" ]]; then
+          echo "build --remote_cache=grpcs://remote.buildbuddy.io" >> .bazelrc.local
+          echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}" >> .bazelrc.local
+          echo "build --remote_upload_local_results=true" >> .bazelrc.local
+          echo "build --experimental_remote_cache_compression" >> .bazelrc.local
+          echo "build --remote_timeout=600" >> .bazelrc.local
+          echo "remote cache: ENABLED (shared across all branches)"
+        else
+          echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
+        fi
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Build changed targets (amd64)
       run: bazel build --config=clang ${DT_TARGETS}
@@ -158,6 +174,17 @@ jobs:
         echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
         echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
         echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
+        # Optional shared remote cache: one read+write cache across ALL branches (see env BB_API_KEY).
+        if [[ -n "${BB_API_KEY:-}" ]]; then
+          echo "build --remote_cache=grpcs://remote.buildbuddy.io" >> .bazelrc.local
+          echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}" >> .bazelrc.local
+          echo "build --remote_upload_local_results=true" >> .bazelrc.local
+          echo "build --experimental_remote_cache_compression" >> .bazelrc.local
+          echo "build --remote_timeout=600" >> .bazelrc.local
+          echo "remote cache: ENABLED (shared across all branches)"
+        else
+          echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
+        fi
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Login to GHCR
       if: ${{ github.event.inputs.push_image != 'false' }}
