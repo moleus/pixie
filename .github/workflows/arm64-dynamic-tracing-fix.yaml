@@ -7,8 +7,17 @@
 # architecture. This workflow proves it: x86 still works (BPF tests), arm64 now
 # compiles (cross-build), and it ships a multiarch PEM image to test on a real cluster.
 #
-# Runners: uses free public GitHub runners. Heavy Bazel build — set the largest runner
-# labels your repo allows via the dispatch inputs, and let the Bazel disk cache warm up.
+# Performance design (why this is fast):
+#   * We build & push ONLY the PEM image (//k8s/vizier:pem_image_push), not the full
+#     7-image vizier bundle x2 arches. The PEM image is the only deliverable the arm64
+#     verification needs.
+#   * Each architecture builds + pushes its OWN PEM image inside the job whose Bazel
+#     disk cache is already warm for that arch (test-x86 -> x86_64, build-arm64 ->
+#     aarch64). The two arch builds run in PARALLEL.
+#   * A final tiny `assemble-pem-image` job just runs `crane index append` to stitch the
+#     multiarch manifest — no Bazel compilation at all (seconds, not hours).
+#   * Two per-arch disk caches (not three) keep us under GitHub's 10 GB/repo cache limit,
+#     avoiding the eviction thrash that forced cold rebuilds before.
 name: arm64-dynamic-tracing-fix
 on:
   workflow_dispatch:
@@ -27,12 +36,19 @@ on:
         type: boolean
         default: true
   push:
-    branches: ['arm64-fix', 'fix/arm64-dynamic-tracing']
+    branches: ['arm64-fix', 'fix/arm64-dynamic-tracing', 'claude/wonderful-bell-nm4uhr']
+
+# Cancel superseded runs on the same ref so iteration doesn't pile up runners or race on
+# the per-branch Bazel cache.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 env:
+  IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
   # Scope every Bazel invocation to the dynamic-tracing surface the fix touches, so the
   # build fits comfortably in a free runner + warm cache.
   DT_TARGETS: >-
@@ -47,12 +63,15 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1) x86: build the changed targets and RUN the dynamic-tracing BPF tests.
-  #    Proves the amd64 path is unchanged (no regression) and the uprobe codegen
-  #    actually compiles + loads BPF (privileged container).
+  # 1) x86: build the changed targets, RUN the dynamic-tracing BPF tests, then
+  #    build & push the x86_64 PEM image. Proves the amd64 path is unchanged and
+  #    ships the x86 half of the multiarch image — all from this job's warm x86 cache.
   # ---------------------------------------------------------------------------
   test-x86:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
     container:
       image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
       options: --privileged           # needed for BPF/uprobe tests (requires_bpf,requires_root)
@@ -69,26 +88,44 @@ jobs:
     - name: Bazel config (no BES; disk cache)
       run: |
         echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
-        echo "build --config=clang" >> .bazelrc.local
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Build changed targets (amd64)
-      run: bazel build ${DT_TARGETS}
+      run: bazel build --config=clang ${DT_TARGETS}
     - name: Run dynamic-tracing unit + integration tests (amd64)
       # These are pl_cc_test unit/integration tests (code_gen, dwarvifier, abi_model, goid)
       # plus dynamic_tracer_test, which drives the full codegen against a real Go binary's
       # DWARF. They run under the default clang config; --config=bpf would filter to ONLY
       # requires_bpf/requires_root targets and exclude all of these.
-      run: bazel test --test_output=errors ${DT_TESTS}
+      run: bazel test --config=clang --test_output=errors ${DT_TESTS}
+    - name: Login to GHCR
+      if: ${{ github.event.inputs.push_image != 'false' }}
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    - name: Build & push x86_64 PEM image
+      if: ${{ github.event.inputs.push_image != 'false' }}
+      shell: bash
+      run: |
+        set -ex
+        TAG="arm64-fix-$(git rev-parse --short HEAD)"
+        . ci/image_utils.sh
+        push_images_for_arch "x86_64" "//k8s/vizier:pem_image_push" "${TAG}" "${IMAGE_REPO}"
+        echo "PUSHED x86_64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-x86_64"
 
   # ---------------------------------------------------------------------------
-  # 2) arm64 compilation: cross-compile the dynamic tracer and the PEM image for
-  #    aarch64 from the x86 dev image. This is what FAILED before the fix — it
-  #    exercises the `#if defined(__aarch64__)` branch at compile time.
-  #    (BPF tests can't run under qemu cross-emulation, hence build-only here;
-  #    real arm64 runtime is verified on the cluster, see the plan.)
+  # 2) arm64: cross-compile the dynamic tracer (this is what FAILED before the fix —
+  #    it exercises the `#if defined(__aarch64__)` branch at compile time) and then
+  #    build & push the aarch64 PEM image — all from this job's warm aarch64 cache.
+  #    (BPF tests can't run under qemu cross-emulation, hence build-only here; real
+  #    arm64 runtime is verified on the cluster with the published image.)
   # ---------------------------------------------------------------------------
   build-arm64:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
     container:
       image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
     steps:
@@ -106,15 +143,33 @@ jobs:
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Cross-compile dynamic tracer for aarch64
       run: bazel build --config=aarch64_sysroot ${DT_TARGETS}
-    - name: Cross-compile the PEM binary for aarch64
+    - name: Login to GHCR
+      if: ${{ github.event.inputs.push_image != 'false' }}
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    - name: Build & push aarch64 PEM image
+      if: ${{ github.event.inputs.push_image != 'false' }}
+      shell: bash
+      run: |
+        set -ex
+        TAG="arm64-fix-$(git rev-parse --short HEAD)"
+        . ci/image_utils.sh
+        push_images_for_arch "aarch64" "//k8s/vizier:pem_image_push" "${TAG}" "${IMAGE_REPO}"
+        echo "PUSHED aarch64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-aarch64"
+    - name: Cross-compile the PEM binary for aarch64 (verification only)
+      # When not pushing, still prove the aarch64 PEM image compiles end-to-end.
+      if: ${{ github.event.inputs.push_image == 'false' }}
       run: bazel build --config=aarch64_sysroot //src/vizier/services/agent/pem:pem_image
 
   # ---------------------------------------------------------------------------
-  # 3) Build & push the MULTIARCH PEM image (x86 + arm64) to the fork's public
-  #    registry. Deploy this image's arm64 manifest to the Graviton cluster to
-  #    verify the fix end-to-end (uprobe reaches state: running).
+  # 3) Assemble the MULTIARCH PEM image from the two per-arch images pushed above.
+  #    This is pure manifest surgery (crane) — no Bazel build — so it's seconds.
+  #    Deploy this image's arm64 manifest to a Graviton cluster to verify the fix.
   # ---------------------------------------------------------------------------
-  push-pem-image:
+  assemble-pem-image:
     if: ${{ github.event.inputs.push_image != 'false' }}
     needs: [test-x86, build-arm64]
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
@@ -124,53 +179,38 @@ jobs:
     container:
       image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
     env:
-      IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
       # Optional: set COSIGN_PRIVATE_KEY / COSIGN_PASSWORD secrets to sign; otherwise skipped.
       COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with: { fetch-depth: 0 }
+      with: { fetch-depth: 1 }
     - run: git config --global --add safe.directory "$(pwd)"
-    - uses: actions/cache@v4
-      with:
-        path: /root/.cache/bazel-disk
-        key: bazel-img-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
-        restore-keys: bazel-
-    - name: Bazel config
-      run: |
-        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
-        echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Login to GHCR
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ github.token }}
-    - name: Build & push multiarch PEM image
+    - name: Assemble multiarch PEM manifest
       shell: bash
       run: |
         set -ex
         TAG="arm64-fix-$(git rev-parse --short HEAD)"
-        . ci/image_utils.sh
+        IMG="${IMAGE_REPO}/vizier-pem_image"
+        crane index append \
+          --manifest "${IMG}:${TAG}-x86_64" \
+          --manifest "${IMG}:${TAG}-aarch64" \
+          --tag "${IMG}:${TAG}"
+        echo "PUSHED PEM: ${IMG}:${TAG}"
         # Make signing optional: no-op when no cosign key is configured.
-        if [[ -z "${COSIGN_PRIVATE_KEY:-}" ]]; then
-          sign_image() { echo "cosign key not set; skipping signature for $1"; }
+        if [[ -n "${COSIGN_PRIVATE_KEY:-}" ]]; then
+          digest="$(crane digest "${IMG}:${TAG}")"
+          cosign sign --key env://COSIGN_PRIVATE_KEY --yes -r "${IMG}:${TAG}@${digest}"
+        else
+          echo "cosign key not set; skipping signature for ${IMG}:${TAG}"
         fi
-        # Build & push the vizier image bundle for both arches, then assemble the
-        # multiarch manifests (PEM included). Reuses Pixie's release machinery.
-        push_images_for_arch "x86_64"  "//k8s/vizier:vizier_images_push" "${TAG}" "${IMAGE_REPO}"
-        push_images_for_arch "aarch64" "//k8s/vizier:vizier_images_push" "${TAG}" "${IMAGE_REPO}"
-        bazel run -c opt --config=stamp \
-          --//k8s:image_repository="${IMAGE_REPO}" \
-          --//k8s:image_version="${TAG}" \
-          //k8s/vizier:list_image_bundle | while read -r image; do
-            case "$image" in *vizier-pem_image*)
-              push_multiarch_image "$image"
-              echo "PUSHED PEM: $image" ;;
-            esac
-          done
         echo "## Deploy this PEM to a Graviton node to verify:" >> "$GITHUB_STEP_SUMMARY"
         echo '```' >> "$GITHUB_STEP_SUMMARY"
-        echo "kubectl -n pixie set image ds/vizier-pem pem=${IMAGE_REPO}/vizier-pem_image:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+        echo "kubectl -n pixie set image ds/vizier-pem pem=${IMG}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
         echo '```' >> "$GITHUB_STEP_SUMMARY"

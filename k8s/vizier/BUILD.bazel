@@ -154,6 +154,38 @@ container_push(
     format = "Docker",
 )
 
+# PEM-only image targets. The arm64 dynamic-tracing workflow only needs to ship the
+# PEM image (the data collector that runs the uprobe codegen), so building/pushing the
+# full vizier bundle (7 images) for two architectures is wasteful. These targets let CI
+# build and push just the PEM image per architecture.
+PEM_IMAGE_TO_LABEL = {
+    "$(IMAGE_PREFIX)/vizier-pem_image:$(BUNDLE_VERSION)": "//src/vizier/services/agent/pem:pem_image",
+}
+
+container_bundle(
+    name = "pem_image_bundle",
+    images = PEM_IMAGE_TO_LABEL,
+    toolchains = [
+        "//k8s:image_prefix",
+        "//k8s:bundle_version",
+    ],
+)
+
+container_push(
+    name = "pem_image_push",
+    bundle = ":pem_image_bundle",
+    format = "Docker",
+)
+
+list_image_bundle(
+    name = "list_pem_image_bundle",
+    images = PEM_IMAGE_TO_LABEL,
+    toolchains = [
+        "//k8s:image_prefix",
+        "//k8s:bundle_version",
+    ],
+)
+
 genrule(
     name = "vizier_etcd_image_list",
     srcs = [
