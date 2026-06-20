@@ -215,6 +215,49 @@ TEST(KafkaFindFrameBoundaryTest, FindRespBoundaryUnAligned) {
 //    EXPECT_EQ(buf.substr(pos), apiversion_frame_view);
 //}
 
+// Regression: modern Kafka clients/brokers negotiate api_versions beyond the
+// versions Pixie used to allow, so the very first frame of a connection (an
+// ApiVersions request) -- and Fetch/Produce -- were rejected as kInvalid, and
+// the connection was never classified as Kafka (showed up as protocol=Unknown).
+// This is a real ApiVersions v4 request captured from a Sarama 3.9 client.
+TEST(KafkaParserTest, ParseModernApiVersionsRequest) {
+  // length=33, api_key=18 (ApiVersions), api_version=4, correlation_id=0,
+  // followed by the (flexible) client software name/version fields.
+  constexpr uint8_t kApiVersionsV4Request[] = {
+      0x00, 0x00, 0x00, 0x21, 0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x06, 0x73, 0x61, 0x72, 0x61, 0x6d, 0x61, 0x00, 0x07, 0x73, 0x61, 0x72, 0x61,
+      0x6d, 0x61, 0x08, 0x76, 0x31, 0x2e, 0x35, 0x30, 0x2e, 0x33, 0x00};
+
+  Packet packet;
+  State state;
+  auto frame_view =
+      CreateStringView<char>(CharArrayStringView<uint8_t>(kApiVersionsV4Request));
+  ParseState parse_state = ParseFrame(message_type_t::kRequest, &frame_view, &packet, &state);
+  EXPECT_EQ(parse_state, ParseState::kSuccess);
+  EXPECT_EQ(packet.correlation_id, 0);
+}
+
+// Guards the supported-version ranges against silently going stale again. Maxes
+// track current Kafka (verified against a 3.9 broker's ApiVersions response).
+TEST(KafkaApiVersionTest, ModernVersionsSupported) {
+  // First-frame and high-traffic APIs that modern clients/brokers actually use.
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kApiVersions, 4));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 11));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 17));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kListOffsets, 9));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFindCoordinator, 6));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kJoinGroup, 9));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kOffsetFetch, 9));
+
+  // Still-valid older versions remain accepted (no regression).
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 7));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 11));
+
+  // Versions beyond the current ceiling are still rejected.
+  EXPECT_FALSE(IsSupportedAPIVersion(APIKey::kApiVersions, 5));
+  EXPECT_FALSE(IsSupportedAPIVersion(APIKey::kFetch, 18));
+}
+
 }  // namespace kafka
 }  // namespace protocols
 }  // namespace stirling

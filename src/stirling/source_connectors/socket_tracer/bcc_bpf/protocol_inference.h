@@ -392,7 +392,12 @@ static __inline enum message_type_t infer_mysql_message(const char* buf, size_t 
 static __inline enum message_type_t infer_kafka_request(const char* buf) {
   // API is Kafka's terminology for opcode.
   static const int kNumAPIs = 62;
-  static const int kMaxAPIVersion = 12;
+  // Highest request api_version across all APIs in current Kafka (Fetch is the
+  // ceiling at v17 as of Kafka 3.9). This is a global cap used only for cheap
+  // in-kernel classification; a too-low value makes high-version connections
+  // (e.g. Fetch v13-17 between brokers/consumers) fail inference and the
+  // connection's protocol is never identified.
+  static const int kMaxAPIVersion = 17;
 
   const int16_t request_API_key = read_big_endian_int16(buf);
   if (request_API_key < 0 || request_API_key > kNumAPIs) {

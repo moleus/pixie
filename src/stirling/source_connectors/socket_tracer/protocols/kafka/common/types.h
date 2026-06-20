@@ -228,50 +228,54 @@ struct APIVersionData {
 // https://github.com/apache/kafka/tree/trunk/clients/src/main/resources/common/message
 // TODO(chengruizhe): Needs updating for new opcodes.
 inline const absl::flat_hash_map<APIKey, APIVersionData> APIVersionMap = {
+    // {kMinVersion, kMaxVersion, kflexibleVersion}. Max versions track current
+    // Kafka (verified against a 3.9 broker's ApiVersions response). A stale max
+    // makes IsSupportedAPIVersion reject modern frames -> the connection is
+    // never classified as Kafka -> protocol shows up as Unknown.
     // Setting min supported version to 1 to help finding frame boundary.
-    {APIKey::kProduce, {1, 9, 9}},
-    {APIKey::kFetch, {0, 12, 12}},
-    {APIKey::kListOffsets, {0, 7, 6}},
+    {APIKey::kProduce, {1, 11, 9}},
+    {APIKey::kFetch, {0, 17, 12}},
+    {APIKey::kListOffsets, {0, 9, 6}},
     {APIKey::kMetadata, {0, 12, 9}},
     {APIKey::kLeaderAndIsr, {0, 5, 4}},
     {APIKey::kStopReplica, {0, 3, 2}},
     {APIKey::kUpdateMetadata, {0, 7, 6}},
     {APIKey::kControlledShutdown, {0, 3, 3}},
-    {APIKey::kOffsetCommit, {0, 8, 8}},
-    {APIKey::kOffsetFetch, {0, 8, 6}},
-    {APIKey::kFindCoordinator, {0, 4, 3}},
-    {APIKey::kJoinGroup, {0, 7, 6}},
+    {APIKey::kOffsetCommit, {0, 9, 8}},
+    {APIKey::kOffsetFetch, {0, 9, 6}},
+    {APIKey::kFindCoordinator, {0, 6, 3}},
+    {APIKey::kJoinGroup, {0, 9, 6}},
     {APIKey::kHeartbeat, {0, 4, 4}},
-    {APIKey::kLeaveGroup, {0, 4, 4}},
+    {APIKey::kLeaveGroup, {0, 5, 4}},
     {APIKey::kSyncGroup, {0, 5, 4}},
     {APIKey::kDescribeGroups, {0, 5, 5}},
-    {APIKey::kListGroups, {0, 4, 3}},
+    {APIKey::kListGroups, {0, 5, 3}},
     {APIKey::kSaslHandshake, {0, 1, -1}},
-    {APIKey::kApiVersions, {0, 3, 3}},
+    {APIKey::kApiVersions, {0, 4, 3}},
     {APIKey::kCreateTopics, {0, 7, 5}},
     {APIKey::kDeleteTopics, {0, 6, 4}},
     {APIKey::kDeleteRecords, {0, 2, 2}},
-    {APIKey::kInitProducerId, {0, 4, 2}},
+    {APIKey::kInitProducerId, {0, 5, 2}},
     {APIKey::kOffsetForLeaderEpoch, {0, 4, 4}},
-    {APIKey::kAddPartitionsToTxn, {0, 3, 3}},
-    {APIKey::kAddOffsetsToTxn, {0, 3, 3}},
-    {APIKey::kEndTxn, {0, 3, 3}},
+    {APIKey::kAddPartitionsToTxn, {0, 5, 3}},
+    {APIKey::kAddOffsetsToTxn, {0, 4, 3}},
+    {APIKey::kEndTxn, {0, 4, 3}},
     {APIKey::kWriteTxnMarkers, {0, 1, 1}},
-    {APIKey::kTxnOffsetCommit, {0, 3, 3}},
-    {APIKey::kDescribeAcls, {0, 2, 2}},
-    {APIKey::kCreateAcls, {0, 2, 2}},
-    {APIKey::kDeleteAcls, {0, 2, 2}},
+    {APIKey::kTxnOffsetCommit, {0, 4, 3}},
+    {APIKey::kDescribeAcls, {0, 3, 2}},
+    {APIKey::kCreateAcls, {0, 3, 2}},
+    {APIKey::kDeleteAcls, {0, 3, 2}},
     {APIKey::kDescribeConfigs, {0, 4, 4}},
     {APIKey::kAlterConfigs, {0, 2, 2}},
     {APIKey::kAlterReplicaLogDirs, {0, 2, 2}},
-    {APIKey::kDescribeLogDirs, {0, 2, 2}},
+    {APIKey::kDescribeLogDirs, {0, 4, 2}},
     {APIKey::kSaslAuthenticate, {0, 2, 2}},
     {APIKey::kCreatePartitions, {0, 3, 2}},
-    {APIKey::kCreateDelegationToken, {0, 2, 2}},
+    {APIKey::kCreateDelegationToken, {0, 3, 2}},
     {APIKey::kRenewDelegationToken, {0, 2, 2}},
     {APIKey::kExpireDelegationToken, {0, 2, 2}},
-    {APIKey::kDescribeDelegationToken, {0, 2, 2}},
-    {APIKey::kDeleteGroups, {0, 5, 5}},
+    {APIKey::kDescribeDelegationToken, {0, 3, 2}},
+    {APIKey::kDeleteGroups, {0, 2, 2}},
     {APIKey::kElectLeaders, {0, 2, 2}},
     {APIKey::kIncrementalAlterConfigs, {0, 1, 1}},
     {APIKey::kAlterPartitionReassignments, {0, 0, 0}},
@@ -282,8 +286,8 @@ inline const absl::flat_hash_map<APIKey, APIVersionData> APIVersionMap = {
     {APIKey::kDescribeUserScramCredentials, {0, 0, 0}},
     {APIKey::kAlterUserScramCredentials, {0, 0, 0}},
     {APIKey::kAlterIsr, {0, 0, 0}},
-    {APIKey::kUpdateFeatures, {0, 0, 0}},
-    {APIKey::kDescribeCluster, {0, 0, 0}},
+    {APIKey::kUpdateFeatures, {0, 1, 1}},
+    {APIKey::kDescribeCluster, {0, 1, 0}},
     {APIKey::kDescribeProducers, {0, 0, 0}}};
 
 inline bool IsFlexible(APIKey api_key, int16_t api_version) {
@@ -324,7 +328,10 @@ constexpr int kMinReqPacketLength =
     kMessageLengthBytes + kAPIKeyLength + kAPIVersionLength + kCorrelationIDLength;
 // length, correlation_id
 constexpr int kMinRespPacketLength = kMessageLengthBytes + kCorrelationIDLength;
-constexpr int kMaxAPIVersion = 12;
+// Global ceiling on request api_version across all APIs (Fetch is highest at
+// v17 in current Kafka). Per-API limits live in APIVersionMap; this is a coarse
+// bound. Keep in sync with the BPF inference cap in protocol_inference.h.
+constexpr int kMaxAPIVersion = 17;
 
 struct Packet : public FrameBase {
   int32_t correlation_id;
