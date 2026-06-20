@@ -779,7 +779,8 @@ int UProbeManager::DeployJavaTLSUProbes(const absl::flat_hash_set<md::UPID>& pid
 void UProbeManager::ReapJavaTLSAttachers() {
   for (auto it = java_tls_attachers_.begin(); it != java_tls_attachers_.end();) {
     if ((*it)->Finished()) {
-      VLOG(1) << absl::Substitute("pixie-jsse: injector finished (attached=$0)", (*it)->attached());
+      VLOG(1) << absl::Substitute("pixie-jsse: injector finished (attached=$0)",
+                                  (*it)->attached() ? "true" : "false");
       it = java_tls_attachers_.erase(it);
     } else {
       ++it;

@@ -301,7 +301,8 @@ void AgentAttachApp::AttachJavaAgentOrDie() {
         selected_so = lib.string();
         break;
       }
-      VLOG(1) << absl::Substitute("AttachJavaAgentOrDie(): $0 not loadable here, next.", lib);
+      VLOG(1) << absl::Substitute("AttachJavaAgentOrDie(): $0 not loadable here, next.",
+                                  lib.string());
     }
   }
   if (selected_so.empty()) {
