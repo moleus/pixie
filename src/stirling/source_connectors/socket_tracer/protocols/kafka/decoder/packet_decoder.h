@@ -95,6 +95,10 @@ class PacketDecoder {
   StatusOr<std::string> ExtractString();
   StatusOr<std::string> ExtractNullableString();
 
+  // A 16-byte UUID, formatted as the canonical 8-4-4-4-12 hex string. Used for
+  // topic_id, which replaced the topic name in Fetch v13+ and Metadata v10+.
+  StatusOr<std::string> ExtractUUID();
+
   StatusOr<std::string> ExtractBytes();
   StatusOr<std::string> ExtractNullableBytes();
 

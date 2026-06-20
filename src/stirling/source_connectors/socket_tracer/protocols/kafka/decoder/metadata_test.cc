@@ -79,6 +79,31 @@ TEST(KafkaPacketDecoder, TestExtractMetadataReqV11) {
   EXPECT_OK_AND_EQ(decoder.ExtractMetadataReq(), expected_result);
 }
 
+// v10+ requests identify a topic by a 16-byte UUID (topic_id), which must be
+// read as raw bytes, not as a length-prefixed string. Built programmatically.
+TEST(KafkaPacketDecoder, TestExtractMetadataReqV11TopicId) {
+  std::string in;
+  in.push_back(0x02);  // topics: compact array, 1 entry (N+1)
+  const char kUuid[16] = {0x12, 0x34, 0x56, 0x78, (char)0x9a, (char)0xbc, (char)0xde, (char)0xf0,
+                          0x11, 0x22, 0x33, 0x44, 0x55,       0x66,       0x77,       (char)0x88};
+  in.append(kUuid, 16);  // topic_id (UUID)
+  in.push_back(0x00);    // name: null compact nullable string
+  in.push_back(0x00);    // topic tag section
+  in.push_back(0x01);    // allow_auto_topic_creation = true
+  in.push_back(0x00);    // include_cluster_authorized_operations = false
+  in.push_back(0x00);    // include_topic_authorized_operations = false
+  in.push_back(0x00);    // request tag section
+
+  MetadataReqTopic topic{.topic_id = "12345678-9abc-def0-1122-334455667788", .name = ""};
+  MetadataReq expected_result{.topics = {topic},
+                              .allow_auto_topic_creation = true,
+                              .include_cluster_authorized_operations = false,
+                              .include_topic_authorized_operations = false};
+  PacketDecoder decoder(in);
+  decoder.SetAPIInfo(APIKey::kMetadata, 11);
+  EXPECT_OK_AND_EQ(decoder.ExtractMetadataReq(), expected_result);
+}
+
 }  // namespace kafka
 }  // namespace protocols
 }  // namespace stirling

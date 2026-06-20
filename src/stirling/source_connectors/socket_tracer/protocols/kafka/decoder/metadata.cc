@@ -28,7 +28,8 @@ StatusOr<MetadataReqTopic> PacketDecoder::ExtractMetadataReqTopic() {
   MetadataReqTopic r;
 
   if (api_version_ >= 10) {
-    PX_ASSIGN_OR_RETURN(r.topic_id, ExtractString());
+    // topic_id is a 16-byte UUID, not a length-prefixed string.
+    PX_ASSIGN_OR_RETURN(r.topic_id, ExtractUUID());
   }
 
   if (api_version_ <= 9) {

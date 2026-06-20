@@ -47,6 +47,9 @@ bool operator==(const FetchReqTopic& lhs, const FetchReqTopic& rhs) {
   if (lhs.name != rhs.name) {
     return false;
   }
+  if (lhs.topic_id != rhs.topic_id) {
+    return false;
+  }
   if (lhs.partitions.size() != rhs.partitions.size()) {
     return false;
   }
@@ -259,6 +262,47 @@ TEST(KafkaPacketDecoder, TestExtractFetchReqV12) {
   };
   PacketDecoder decoder(input);
   decoder.SetAPIInfo(APIKey::kFetch, 12);
+  EXPECT_OK_AND_EQ(decoder.ExtractFetchReq(), expected_result);
+}
+
+// Fetch v13 identifies the topic by a 16-byte UUID (topic_id) instead of the
+// name. Built programmatically so the UUID bytes are unambiguous.
+TEST(KafkaPacketDecoder, TestExtractFetchReqV13TopicId) {
+  std::string input;
+  auto be32 = [&](uint32_t v) {
+    for (int i = 3; i >= 0; --i) input.push_back(static_cast<char>((v >> (i * 8)) & 0xff));
+  };
+  be32(0xffffffff);  // replica_id = -1
+  be32(500);         // max_wait_ms
+  be32(1);           // min_bytes
+  be32(1048576);     // max_bytes (v3+)
+  input.push_back(0);                  // isolation_level (v4+)
+  be32(0);                             // session_id (v7+)
+  be32(0);                             // session_epoch (v7+)
+  input.push_back(0x02);               // topics: compact array, 1 entry (N+1)
+  const char kUuid[16] = {0x12, 0x34, 0x56, 0x78, (char)0x9a, (char)0xbc, (char)0xde, (char)0xf0,
+                          0x11, 0x22, 0x33, 0x44, 0x55,       0x66,       0x77,       (char)0x88};
+  input.append(kUuid, 16);             // topic_id (UUID) -- replaces the name in v13
+  input.push_back(0x01);               // partitions: compact array, 0 entries
+  input.push_back(0x00);               // topic tag section
+  input.push_back(0x01);               // forgotten_topics: compact array, 0 entries
+  input.push_back(0x01);               // rack_id: empty compact string
+  input.push_back(0x00);               // request tag section
+
+  FetchReqTopic topic{
+      .topic_id = "12345678-9abc-def0-1122-334455667788",
+      .partitions = {},
+  };
+  FetchReq expected_result{
+      .replica_id = -1,
+      .session_id = 0,
+      .session_epoch = 0,
+      .topics = {topic},
+      .forgotten_topics = {},
+      .rack_id = "",
+  };
+  PacketDecoder decoder(input);
+  decoder.SetAPIInfo(APIKey::kFetch, 13);
   EXPECT_OK_AND_EQ(decoder.ExtractFetchReq(), expected_result);
 }
 

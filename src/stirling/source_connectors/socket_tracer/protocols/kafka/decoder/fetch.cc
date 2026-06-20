@@ -26,7 +26,12 @@ namespace kafka {
 
 StatusOr<FetchReqTopic> PacketDecoder::ExtractFetchReqTopic() {
   FetchReqTopic r;
-  PX_ASSIGN_OR_RETURN(r.name, ExtractString());
+  // Fetch v13 replaced the topic name (string) with a topic_id (16-byte UUID).
+  if (api_version_ >= 13) {
+    PX_ASSIGN_OR_RETURN(r.topic_id, ExtractUUID());
+  } else {
+    PX_ASSIGN_OR_RETURN(r.name, ExtractString());
+  }
   PX_ASSIGN_OR_RETURN(r.partitions,
                       ExtractArray<FetchReqPartition>(&PacketDecoder::ExtractFetchReqPartition));
   PX_RETURN_IF_ERROR(/* tag_section */ ExtractTagSection());
