@@ -8,6 +8,7 @@ a real broker.
 ```bash
 ./run.sh            # functional + a 20k-iteration sanitizer fuzz
 ./run.sh 200000     # longer fuzz
+sudo ./run_e2e.sh   # full eBPF path: uprobe -> ringbuf -> parser (needs root)
 ```
 
 ## What they cover
@@ -20,6 +21,15 @@ a real broker.
   `kafka_parse_produce`, `kafka_parse_fetch_response`, and `kafka_decompress` with
   truncations of a valid frame (every prefix length), byte-flip mutations, pure
   random buffers, and a malformed xerial frame whose block length is ~2 GB.
+
+- **`e2e_driver.c` + `run_e2e.sh`** — builds `libpixie_jsse.so` + the eBPF
+  collector, then a synthetic caller that pushes a real length-prefixed Produce
+  frame through `pixie_jsse_plaintext()`; asserts the collector's uprobe captured
+  and decoded it (`cmd=Produce`, record `value="payload-over-tls"`). Exercises the
+  whole x86 path: trampoline → uprobe → BPF arg registers → ring buffer →
+  reassembly → parser. Needs root. (The arm64 register selection is verified by
+  disassembly in `../../docs/LOCAL_ARM64_VALIDATION.md`; running the arm64 eBPF
+  end-to-end needs a real arm64 kernel.)
 
 ## Regression notes
 - `kd_i64` accumulates into a **`uint64_t`** before casting to `int64_t`. Doing the
