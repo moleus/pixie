@@ -158,3 +158,65 @@ SyncGroup, OffsetFetch, ListOffsets, InitProducerId, Produce, Fetch), including
 producer keys/values and the full Fetch payload delivered to the consumer — all on
 connections where `tcpdump` on the wire showed only ciphertext. See
 [`docs/sample_output.txt`](docs/sample_output.txt).
+
+## 6. Raw Kafka parser + second-round gotchas
+
+The standalone collector originally surfaced plaintext via a string-extraction
+heuristic. It now carries a real, from-scratch Kafka wire decoder
+([`collector/kafka_parser.h`](collector/kafka_parser.h)) modelled on Pixie's C++
+`protocols/kafka/decoder`: a bounds-checked cursor with INT16/32/64, (un)signed
+zig-zag varints, regular/compact strings & arrays, and tagged fields; request
+header parsing; and descent into **Produce requests** and **Fetch responses**
+down to individual records (key/value) inside RecordBatch (magic v2). Building it
+against live Kafka 3.9 surfaced several gotchas — some of which also affect
+Pixie's own parser:
+
+- **Kafka protocol versions evolve and break layouts.** Kafka 3.9 clients
+  negotiate **Fetch v17** and **Produce v11**. Fetch **v13+ replaced the topic
+  *name* (string) with a 16-byte `topic_id` (UUID)** in the response — a breaking
+  wire change. A parser written to the v12 schema reads the UUID as a string and
+  every subsequent offset is wrong, yielding zero records. Pixie's `APIVersionMap`
+  caps Fetch at v12 and Produce at v9, so **modern Kafka Fetch/Produce versions
+  would be marked unsupported/misparsed by upstream Pixie today** — a real gap
+  worth flagging. Our parser special-cases `topic_id` for Fetch ≥ v13.
+- **`api_key` alone is too weak a request signal.** A response frame whose first
+  two bytes happen to be `00 00` looks like a Produce (api_key 0) request. The fix
+  is twofold: try correlation-id pairing first (a frame whose leading int32 is an
+  outstanding request's correlation id is a response), and validate
+  `api_version <= max_version(api_key)` (e.g. Produce ≤ 11) to reject coincidences.
+- **Compression is real and Pixie doesn't handle it.** RecordBatch `attributes`
+  bits 0–2 select gzip/snappy/lz4/zstd; the records blob after the batch header is
+  then a single compressed stream. Pixie reads the attributes but not the payload,
+  so compressed batches yield no records there. Our parser decompresses **gzip
+  (zlib, windowBits 31)** and **zstd (libzstd)** in-place and re-parses; snappy/lz4
+  are detected and noted (headers/libs not present on this host). Verified by
+  producing with `compression.type=gzip|zstd` and recovering the records.
+- **A capture-size mask must clamp, not wrap.** The collector's BPF masked the
+  capture length with `len &= (MAX-1)` for the verifier; for `len >= MAX` that
+  *wraps* (a 4096-byte message → 0 captured). Correct form is clamp-then-mask:
+  `if (len > MAX-1) len = MAX-1; len &= (MAX-1);`. (The production `jsse_trace.c`
+  path is unaffected — it delegates to Pixie's `process_data`, which chunks large
+  messages up to `MAX_MSG_SIZE` and reassembles in user space.) Single writes
+  larger than the per-event cap are still truncated in the demo; the Kafka client
+  happens to write requests in sub-cap pieces that per-fd reassembly recombines,
+  so even a 50 KB value decoded in testing.
+
+## 7. Compiling Pixie here (Bazel) — and the cert gotcha
+
+The full PEM is too large to build under the disk/time budget, but the relevant
+targets *do* build once one environment quirk is solved:
+
+- The sandbox proxy does TLS interception with a private CA that is in the system
+  bundle (`curl` works) but **not in the JVM truststore Bazel uses**, so every
+  `http_archive`/maven download fails with `PKIX path building failed`.
+- The system already ships a Java truststore that trusts the proxy at
+  `/etc/ssl/certs/java/cacerts`. Pointing Bazel at it requires **two** places,
+  because downloads happen in two different JVMs:
+  - the **Bazel server** JVM → `--host_jvm_args=-Djavax.net.ssl.trustStore=… -Djavax.net.ssl.trustStorePassword=changeit` (a startup flag; restarts the server);
+  - the **`rules_jvm_external` coursier** subprocess (separate JVM, and
+    `--incompatible_strict_action_env` strips the env) → `--repo_env="JAVA_TOOL_OPTIONS=-Djavax.net.ssl.trustStore=… -Djavax.net.ssl.trustStorePassword=changeit"`.
+
+With those, `//…/bcc_bpf:socket_trace_bpf_preprocess` builds and the preprocessed
+output contains `probe_entry_jsse_plaintext` / `kJavaJSSESource` (the new probe
+and enum compile into the BPF include chain), confirming the Stirling-side
+integration is wired correctly.

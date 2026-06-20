@@ -1,52 +1,37 @@
-# Sample output: Pixie JSSE collector decoding Kafka-over-TLS plaintext
-# (captured live from a Kafka 3.9.0 broker with the pixie-jsse agent, TLS listener)
-#
-# Each row is one Kafka request/response recovered from an ENCRYPTED connection,
-# correlation-paired the way Pixie's kafka_events table stitches them.
+# Sample output — Pixie JSSE collector decoding Kafka-over-TLS plaintext
+# Captured live from Kafka 3.9.0 (Java 21) with the pixie-jsse agent on an SSL listener.
+# Each REQ/RESP is one Kafka frame recovered from an ENCRYPTED connection; '↳' lines are
+# individual records (the actual messages) decoded from RecordBatch v2.
 
-## Decoded request/response rows (representative):
-1781912138759  fd=236  encrypted=TRUE  dir=REQ   cmd=ApiVersions    corr=0       client=console-producer   req=['apache-kafka-java' '3.9.0']  bytes="..apache-kafka-java.3.9.0."
-1781912138760  fd=236  encrypted=TRUE  dir=RESP  cmd=ApiVersions    corr=0       client=-                  resp=['kraft.version' 'metadata.version' 'metadata.version']  bytes="..>........................................................"
-1781912138908  fd=236  encrypted=TRUE  dir=REQ   cmd=Metadata       corr=1       client=console-producer   req=['payments']  bytes="...................payments...."
-1781912138910  fd=236  encrypted=TRUE  dir=RESP  cmd=Metadata       corr=1       client=-                  resp=['localhost' 'bgjrKuL7QVu8ApCXWaP6Dg' 'payments' '(]L' 'f"y']  bytes="...........localhost..#....bgjrKuL7QVu8ApCXWaP6Dg.........."
-1781912138911  fd=236  encrypted=TRUE  dir=REQ   cmd=InitProducerId corr=2       client=console-producer   req=[]  bytes="................."
-1781912138912  fd=236  encrypted=TRUE  dir=RESP  cmd=InitProducerId corr=2       client=-                  resp=[]  bytes=".................."
-1781912138967  fd=239  encrypted=TRUE  dir=REQ   cmd=ApiVersions    corr=4       client=console-producer   req=['apache-kafka-java' '3.9.0']  bytes="..apache-kafka-java.3.9.0."
-1781912138970  fd=239  encrypted=TRUE  dir=RESP  cmd=ApiVersions    corr=4       client=-                  resp=['kraft.version' 'metadata.version' 'metadata.version']  bytes="..>........................................................"
-1781912138985  fd=239  encrypted=TRUE  dir=REQ   cmd=Produce        corr=5       client=console-producer   req=['payments' 'acct-100"BALANCE_42000_USD' 'acct-200,WIRE_TO_IBAN_DE89_9999' 'acct-300' 'FRAUD_FLAG_TRUE']  bytes="..........payments..........................@`............."
-1781912138988  fd=239  encrypted=TRUE  dir=RESP  cmd=Produce        corr=5       client=-                  resp=['payments']  bytes="...payments........................................"
-1781912141048  fd=236  encrypted=TRUE  dir=REQ   cmd=ApiVersions    corr=1       client=console-consumer   req=['apache-kafka-java' '3.9.0']  bytes="..apache-kafka-java.3.9.0."
-1781912141052  fd=236  encrypted=TRUE  dir=RESP  cmd=ApiVersions    corr=1       client=-                  resp=['kraft.version' 'metadata.version' 'metadata.version']  bytes="..>........................................................"
-1781912141130  fd=236  encrypted=TRUE  dir=REQ   cmd=Metadata       corr=2       client=console-consumer   req=['payments']  bytes="...................payments...."
-1781912141131  fd=236  encrypted=TRUE  dir=RESP  cmd=Metadata       corr=2       client=-                  resp=['localhost' 'bgjrKuL7QVu8ApCXWaP6Dg' 'payments' '(]L' 'f"y']  bytes="...........localhost..#....bgjrKuL7QVu8ApCXWaP6Dg.........."
-1781912141134  fd=236  encrypted=TRUE  dir=REQ   cmd=FindCoordinator corr=0       client=console-consumer   req=['console-consumer-37597']  bytes="....console-consumer-37597."
-1781912141136  fd=236  encrypted=TRUE  dir=RESP  cmd=FindCoordinator corr=0       client=-                  resp=['console-consumer-37597' 'localhost']  bytes=".......console-consumer-37597.....localhost..#......"
-1781912141186  fd=239  encrypted=TRUE  dir=REQ   cmd=ApiVersions    corr=5       client=console-consumer   req=['apache-kafka-java' '3.9.0']  bytes="..apache-kafka-java.3.9.0."
-1781912141187  fd=239  encrypted=TRUE  dir=RESP  cmd=ApiVersions    corr=5       client=-                  resp=['kraft.version' 'metadata.version' 'metadata.version']  bytes="..>........................................................"
-1781912141192  fd=239  encrypted=TRUE  dir=REQ   cmd=JoinGroup      corr=4       client=console-consumer   req=['console-consumer-37597' 'consumer' 'range' 'payments' 'cooperative-sticky#' 'payments']  bytes="..console-consumer-37597...........consumer..range........."
-1781912141194  fd=239  encrypted=TRUE  dir=RESP  cmd=JoinGroup      corr=4       client=-                  resp=['6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae']  bytes="......O........6console-consumer-b1c9bb06-d649-4d90-9e53..."
-1781912141196  fd=239  encrypted=TRUE  dir=REQ   cmd=JoinGroup      corr=6       client=console-consumer   req=['console-consumer-37597' '6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' 'consumer' 'range' 'payments' 'cooperative-sticky#' 'payments' '`need to re-join with the given member-id: console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae']  bytes="..console-consumer-37597........6console-consumer-b1c9bb..."
-1781912144198  fd=239  encrypted=TRUE  dir=RESP  cmd=JoinGroup      corr=6       client=-                  resp=['consumer' 'range6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' '6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' '6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' 'payments']  bytes="............consumer.range6console-consumer-b1c9bb06-d64..."
-1781912144219  fd=239  encrypted=TRUE  dir=REQ   cmd=SyncGroup      corr=7       client=console-consumer   req=['console-consumer-37597' '6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' 'consumer' 'range' '6console-consumer-b1c9bb06-d649-4d90-9e53-f3dc02358bae' 'payments']  bytes="..console-consumer-37597....6console-consumer-b1c9bb06-d..."
-1781912144220  fd=239  encrypted=TRUE  dir=RESP  cmd=SyncGroup      corr=7       client=-                  resp=['consumer' 'range' 'payments']  bytes="........consumer.range.........payments............."
-1781912144230  fd=239  encrypted=TRUE  dir=REQ   cmd=OffsetFetch    corr=8       client=console-consumer   req=['console-consumer-37597' 'payments']  bytes="...console-consumer-37597.......payments........."
-1781912144232  fd=239  encrypted=TRUE  dir=RESP  cmd=OffsetFetch    corr=8       client=-                  resp=['console-consumer-37597' 'payments']  bytes=".......console-consumer-37597..payments...................."
-1781912144266  fd=240  encrypted=TRUE  dir=REQ   cmd=ApiVersions    corr=10      client=console-consumer   req=['apache-kafka-java' '3.9.0']  bytes="..apache-kafka-java.3.9.0."
-1781912144267  fd=240  encrypted=TRUE  dir=RESP  cmd=ApiVersions    corr=10      client=-                  resp=['kraft.version' 'metadata.version' 'metadata.version']  bytes="..>........................................................"
+==================== Produce request: topic/key/value decoded ====================
+1781915596360  fd=239  encrypted=TRUE  REQ   cmd=Produce         v11 corr=5       client=console-producer
+        ↳ fd=239 topic=payments     part=0 key="user-1" value="{"event":"login","ip":"10.0.0.5"}"
+        ↳ fd=239 topic=payments     part=0 key="user-2" value="{"event":"purchase","amount":4200}"
+        ↳ fd=239 topic=payments     part=0 key="user-3" value="PLAIN_VALUE_NO_JSON"
 
-## API commands observed (over TLS, via eBPF):
-     10 cmd=ApiVersions
-      6 cmd=Fetch
-      4 cmd=Metadata
-      4 cmd=JoinGroup
-      3 cmd=Produce
-      2 cmd=SyncGroup
-      2 cmd=OffsetFetch
-      2 cmd=ListOffsets
-      2 cmd=InitProducerId
-      2 cmd=FindCoordinator
+==================== Fetch response: consumer reading records back (topic_id, v17) ====================
+1781915603837  fd=239  encrypted=TRUE  RESP  cmd=Fetch           v17 corr=11     
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="order-1" value="PIXIE_SECRET_PAYLOAD_ALPHA"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="order-2" value="PIXIE_SECRET_PAYLOAD_BRAVO"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="order-3" value="transfer-9000-USD"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="acct-100" value="BALANCE_42000_USD"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="acct-200" value="WIRE_TO_IBAN_DE89_9999"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="acct-300" value="FRAUD_FLAG_TRUE"
+        ↳ fd=239 topic=id:cb0bbca4-285d.. part=0 key="acct-100" value="BALANCE_42000_USD"
 
-## Side-by-side proof (same secret sent over TLS):
+==================== Compression: gzip + zstd batches decompressed ====================
+        ↳ fd=240 topic=comp-topic   part=0 key="gz-1" value="GZIP_COMPRESSED_SECRET_AAA"
+        ↳ fd=240 topic=comp-topic   part=0 key="gz-2" value="GZIP_COMPRESSED_SECRET_BBB"
+        ↳ fd=240 topic=comp-topic   part=0 key="zs-1" value="ZSTD_COMPRESSED_SECRET_CCC"
+        ↳ fd=240 topic=comp-topic   part=0 key="zs-2" value="ZSTD_COMPRESSED_SECRET_DDD"
+
+==================== Multi-partition topic (records land on part 0/1/2) ====================
+        ↳ fd=240 topic=multi        part=0 key="k-a" value="msg-to-some-partition-A"
+        ↳ fd=240 topic=multi        part=0 key="k-d" value="msg-to-some-partition-D"
+        ↳ fd=240 topic=multi        part=2 key="k-c" value="msg-to-some-partition-C"
+        ↳ fd=240 topic=multi        part=1 key="k-b" value="msg-to-some-partition-B"
+
+==================== CONTRAST: same secret over TLS, two observers ====================
 ================ RESULT ================
 Secret produced over TLS: TOPSECRET_TRANSFER_50000_TO_ACME
 
@@ -54,4 +39,4 @@ Secret produced over TLS: TOPSECRET_TRANSFER_50000_TO_ACME
 [2] Pixie eBPF JSSE collector:    VISIBLE -> plaintext recovered via eBPF
 
 --- the eBPF row that carries it ---
-1781912221371  fd=239  encrypted=TRUE  dir=REQ   cmd=Produce        corr=5       client=console-producer   req=['payments' 'paykey@TOPSECRET_TRANSFER_50000_TO_ACME']  bytes="..........payments.....k...........^......................."
+1781912735189  fd=239  encrypted=TRUE  dir=REQ   cmd=Produce        corr=6       client=console-producer   req=['payments' 'paykey@TOPSECRET_TRANSFER_50000_TO_ACME']  bytes="..........payments.....k...........^........~.............."
