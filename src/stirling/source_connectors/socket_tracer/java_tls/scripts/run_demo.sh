@@ -119,7 +119,9 @@ wait %3 2>/dev/null || true   # let the collector's timer elapse
 
 echo
 echo "================ DECODED KAFKA-OVER-TLS ROWS (via eBPF) ================"
-grep -E "dir=REQ|dir=RESP" collector.out | head -24
+# Collector prints "encrypted=TRUE  REQ/RESP ..." command rows and "  ↳ ... value=" record
+# rows; show both. (The literal "dir=" prefix only appears in the collector's --hex mode.)
+grep -E "encrypted=TRUE|↳" collector.out | head -24
 echo
 echo "================ CONTRAST: same secret, two observers ================"
 echo "Secret produced over TLS: $SECRET"
