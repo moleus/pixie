@@ -242,12 +242,24 @@ StatusOr<VarLocation> SysVABIModel::PopLocation(TypeClass type_class, uint64_t t
       // which points to the return value.
       // TODO(oazizi): Fix the return value so it isn't different. Fortunately , there are no users
       //               of this case yet. DwarfReader currently throws the returned location away.
-      location.loc_type = LocationType::kRegister;
-      location.registers.push_back(int_arg_registers_.front());
-      location.offset = current_int_arg_reg_offset_;
+      if (!int_arg_registers_.empty()) {
+        location.loc_type = LocationType::kRegister;
+        location.registers.push_back(int_arg_registers_.front());
+        location.offset = current_int_arg_reg_offset_;
 
-      int_arg_registers_.pop_front();
-      current_int_arg_reg_offset_ += reg_size_;
+        int_arg_registers_.pop_front();
+        current_int_arg_reg_offset_ += reg_size_;
+      } else {
+        // All integer argument registers are already spoken for (e.g. a function with enough
+        // integer-register arguments to exhaust them, returning a >16-byte aggregate). Reading
+        // int_arg_registers_.front() here would dereference an empty std::deque (undefined
+        // behavior). Fall back to a stack location; this case's result is currently discarded by
+        // DwarfReader, so the precise value is not load-bearing — but it must be well-defined.
+        current_stack_offset_ = SnapUpToMultiple<int64_t>(current_stack_offset_, alignment_size);
+        location.loc_type = LocationType::kStack;
+        location.offset = current_stack_offset_;
+        current_stack_offset_ += type_size;
+      }
     } else {
       location.loc_type =
           (type_class == TypeClass::kInteger) ? LocationType::kRegister : LocationType::kRegisterFP;
