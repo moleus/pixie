@@ -94,7 +94,9 @@ grep -q "Kafka Server started" broker.log || { echo "broker failed:"; tail -20 b
 grep "pixie-jsse" broker.log || true
 
 echo "== [4/6] start eBPF collector on libpixie_jsse.so =="
-"$COLLECTOR" "$LIB" 25 > collector.out 2>&1 &
+# The collector loads jsse_collector.bpf.o by a path relative to its CWD, so run it
+# from its own directory (as selftest.sh does); collector.out stays in $WORK.
+( cd "$JT/collector" && ./collector "$LIB" 25 ) > collector.out 2>&1 &
 sleep 4
 
 echo "== [5/6] produce + consume over TLS =="
