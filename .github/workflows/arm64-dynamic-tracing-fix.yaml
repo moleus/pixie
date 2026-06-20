@@ -73,8 +73,12 @@ jobs:
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Build changed targets (amd64)
       run: bazel build ${DT_TARGETS}
-    - name: Run dynamic-tracing tests, incl. BPF/uprobe (amd64)
-      run: bazel test --config=bpf --test_output=errors ${DT_TESTS}
+    - name: Run dynamic-tracing unit tests (amd64)
+      # DT_TESTS are codegen/DWARF unit tests; none are tagged requires_bpf/requires_root.
+      # --config=bpf sets --test_tag_filters=requires_bpf,requires_root, which excludes ALL of
+      # them ("All specified test targets were excluded by filters" -> exit 4). Run them with
+      # --config=clang (matching the build step) so they actually execute.
+      run: bazel test --config=clang --test_output=errors ${DT_TESTS}
 
   # ---------------------------------------------------------------------------
   # 2) arm64 compilation: cross-compile the dynamic tracer and the PEM image for
