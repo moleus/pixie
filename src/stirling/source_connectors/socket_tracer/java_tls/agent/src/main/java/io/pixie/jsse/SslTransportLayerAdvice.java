@@ -54,6 +54,9 @@ public final class SslTransportLayerAdvice {
 
     @Advice.OnMethodEnter
     public static int enter(@Advice.Argument(0) ByteBuffer src) {
+      // Mark that a known transport is handling this connection so the generic
+      // SSLEngine hook (which runs inside, via sslEngine.wrap) skips/dedups.
+      EngineContext.inTransport.set(Boolean.TRUE);
       return src == null ? -1 : src.position();
     }
 
@@ -62,6 +65,7 @@ public final class SslTransportLayerAdvice {
         @Advice.FieldValue("socketChannel") Object channel,
         @Advice.Argument(0) ByteBuffer src,
         @Advice.Enter int startPos) {
+      EngineContext.inTransport.set(Boolean.FALSE);
       PixieCapture.onWriteConsumed(channel, src, startPos);
     }
   }
@@ -70,11 +74,17 @@ public final class SslTransportLayerAdvice {
   public static final class Read {
     private Read() {}
 
+    @Advice.OnMethodEnter
+    public static void enter() {
+      EngineContext.inTransport.set(Boolean.TRUE);  // dedup vs the generic engine hook
+    }
+
     @Advice.OnMethodExit
     public static void exit(
         @Advice.FieldValue("socketChannel") Object channel,
         @Advice.Argument(0) ByteBuffer dst,
         @Advice.Return int ret) {
+      EngineContext.inTransport.set(Boolean.FALSE);
       PixieCapture.onRead(channel, dst, ret);
     }
   }

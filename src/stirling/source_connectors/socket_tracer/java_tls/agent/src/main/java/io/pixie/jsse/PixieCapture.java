@@ -95,15 +95,19 @@ public final class PixieCapture {
   }
 
   private static void capture(Object channel, ByteBuffer view, int len, int direction) {
-    if (IN_CAPTURE.get()) {
+    int fd = FdExtractor.fdOf(channel);
+    if (fd >= 0) {
+      captureFd(fd, view, len, direction);
+    }
+  }
+
+  /** Copy [view.position(), +len) into the per-thread direct buffer and emit it. */
+  private static void captureFd(int fd, ByteBuffer view, int len, int direction) {
+    if (fd < 0 || len <= 0 || IN_CAPTURE.get()) {
       return;
     }
     IN_CAPTURE.set(Boolean.TRUE);
     try {
-      int fd = FdExtractor.fdOf(channel);
-      if (fd < 0) {
-        return;
-      }
       ByteBuffer scratch = SCRATCH.get();
       int n = Math.min(len, scratch.capacity());
       scratch.clear();
@@ -117,6 +121,70 @@ public final class PixieCapture {
       // Never let observability break the broker.
     } finally {
       IN_CAPTURE.set(Boolean.FALSE);
+    }
+  }
+
+  // ----- Generic SSLEngine path (see SSLEngineAdvice / EngineContext) -----
+
+  /** Record the start positions of appData[offset, offset+length). */
+  public static int[] enginePositions(ByteBuffer[] appData, int offset, int length) {
+    if (!enabled || appData == null || length <= 0) {
+      return null;
+    }
+    // Skip entirely when a known transport wrapper (Kafka) will capture with the
+    // exact fd — avoids double-capturing the same plaintext.
+    if (EngineContext.inTransport.get()) {
+      return null;
+    }
+    try {
+      int[] pos = new int[length];
+      for (int i = 0; i < length; i++) {
+        ByteBuffer b = appData[offset + i];
+        pos[i] = (b == null) ? -1 : b.position();
+      }
+      return pos;
+    } catch (Throwable t) {
+      return null;
+    }
+  }
+
+  /** wrap(): bytes consumed from each appData buffer are egress plaintext. */
+  public static void onEngineWrap(ByteBuffer[] appData, int offset, int length, int[] startPositions) {
+    engineDelta(appData, offset, length, startPositions, DIR_EGRESS);
+  }
+
+  /** unwrap(): bytes produced into each appData buffer are ingress plaintext. */
+  public static void onEngineUnwrap(ByteBuffer[] appData, int offset, int length, int[] startPositions) {
+    engineDelta(appData, offset, length, startPositions, DIR_INGRESS);
+  }
+
+  private static void engineDelta(ByteBuffer[] appData, int offset, int length, int[] start,
+                                  int direction) {
+    if (!enabled || start == null || appData == null) {
+      return;
+    }
+    int fd = EngineContext.getFd();  // set by SocketChannelFdAdvice on this thread
+    if (fd < 0) {
+      return;
+    }
+    try {
+      for (int i = 0; i < length; i++) {
+        ByteBuffer b = appData[offset + i];
+        if (b == null || start[i] < 0) {
+          continue;
+        }
+        int end = b.position();
+        int n = end - start[i];
+        if (n <= 0) {
+          continue;
+        }
+        ByteBuffer view = b.duplicate();
+        view.position(start[i]);
+        view.limit(end);
+        captureFd(fd, view, n, direction);
+      }
+    } catch (Throwable t) {
+      // never break the app
     }
   }
 }
