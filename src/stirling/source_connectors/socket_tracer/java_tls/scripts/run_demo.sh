@@ -84,8 +84,12 @@ if [ ! -f data/meta.properties ]; then
 fi
 
 echo "== [3/6] start broker with pixie-jsse agent (broker code UNMODIFIED) =="
+# MODE selects the hook: kafka (default; org.apache.kafka SslTransportLayer),
+# engine (generic sun.security.ssl.SSLEngineImpl, for ANY JSSE app), or both.
+MODE="${PIXIE_JSSE_MODE:-kafka}"
 export KAFKA_HEAP_OPTS="-Xmx512M -Xms256M"
-export KAFKA_OPTS="-javaagent:$AGENT=$LIB"
+export KAFKA_OPTS="-javaagent:$AGENT=$LIB -Dpixie.jsse.mode=$MODE"
+echo "   pixie.jsse.mode=$MODE"
 "$KAFKA_HOME/bin/kafka-server-start.sh" server.properties > broker.log 2>&1 &
 BROKER_PID=$!
 trap 'kill $BROKER_PID 2>/dev/null' EXIT
