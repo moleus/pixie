@@ -22,6 +22,10 @@
 #     link (version_linkstamp) across commits — warm runs skip the expensive relink.
 #   * A final tiny `assemble-pem-image` job stitches the multiarch manifest with
 #     `crane index append` — no Bazel compilation, so it finishes in seconds.
+#   * Running on the default branch (`main`) and on a weekly schedule seeds the shared Bazel
+#     disk cache: GitHub only shares the DEFAULT branch's caches across branches, so a warm
+#     cache on `main` turns feature-branch cold starts (no own cache yet) into near-warm runs
+#     instead of compiling stirling+carnot from scratch.
 name: arm64-dynamic-tracing-fix
 on:
   workflow_dispatch:
@@ -40,7 +44,11 @@ on:
         type: boolean
         default: true
   push:
-    branches: ['arm64-fix', 'fix/arm64-dynamic-tracing', 'claude/wonderful-bell-nm4uhr']
+    branches: ['main', 'arm64-fix', 'fix/arm64-dynamic-tracing', 'claude/wonderful-bell-nm4uhr']
+  schedule:
+  # Weekly (Sun 07:09 UTC) run on the default branch to keep the shared Bazel disk cache warm
+  # (GitHub evicts caches untouched for 7 days), so feature-branch cold starts stay near-warm.
+  - cron: '9 7 * * 0'
 
 # Cancel superseded runs on the same ref so iteration doesn't pile up runners or race on
 # the per-branch Bazel cache.
