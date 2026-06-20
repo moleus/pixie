@@ -46,7 +46,8 @@
  *
  * eBPF reads the plaintext from arg2 (buf) for arg3 (len) bytes and tags the
  * resulting data event with the file descriptor in arg0 and the direction in
- * arg1 (0 = ingress/read/decrypted, 1 = egress/write/to-be-encrypted).
+ * arg1 (0 = egress/write/pre-encrypt, 1 = ingress/read/post-decrypt; matches
+ * Pixie's traffic_direction_t kEgress=0/kIngress=1).
  */
 
 #include <stddef.h>
@@ -57,7 +58,7 @@
  *
  *   fd        : OS file descriptor of the underlying socket (matches the
  *               {tgid, fd} key used by Pixie's syscall kprobes).
- *   direction : 0 = ingress (post-decrypt), 1 = egress (pre-encrypt).
+ *   direction : 0 = egress (pre-encrypt), 1 = ingress (post-decrypt).
  *   buf       : pointer to the plaintext bytes (off-heap / direct buffer).
  *   len       : number of valid plaintext bytes at buf.
  */

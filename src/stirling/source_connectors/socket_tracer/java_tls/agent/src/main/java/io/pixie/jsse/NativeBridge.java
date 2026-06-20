@@ -47,15 +47,12 @@ public final class NativeBridge {
     loaded = true;
   }
 
-  public static boolean isLoaded() {
-    return loaded;
-  }
-
   /**
    * Emit one plaintext record to eBPF.
    *
    * @param fd        OS file descriptor of the underlying socket.
-   * @param direction 0 = ingress (decrypted bytes), 1 = egress (pre-encryption).
+   * @param direction 0 = egress (pre-encryption, i.e. write), 1 = ingress (post-decryption, read).
+   *                  Matches Pixie's traffic_direction_t (kEgress=0, kIngress=1).
    * @param data      direct ByteBuffer whose first {@code len} bytes are plaintext.
    * @param len       number of valid plaintext bytes.
    */

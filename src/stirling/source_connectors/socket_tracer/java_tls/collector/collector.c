@@ -39,7 +39,6 @@ struct jsse_event {
 
 static int verbose_hex = 0;
 
-static int16_t rd16(const unsigned char *p) { return (int16_t)((p[0] << 8) | p[1]); }
 static int32_t rd32(const unsigned char *p) {
   return (int32_t)(((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]);
 }
