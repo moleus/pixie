@@ -19,6 +19,6 @@ echo "compiling userspace collector..."
 # liblz4 often ships without a -dev symlink, so link the runtime .so by path.
 LZ4LIB="$(ldconfig -p | awk -F'=> ' '/liblz4.so.1/{print $2; exit}')"
 LZ4LIB="${LZ4LIB:-/lib/x86_64-linux-gnu/liblz4.so.1}"
-$CLANG -O2 collector.c -lbpf -lelf -lz -lzstd "$LZ4LIB" -o collector
+$CLANG -O2 collector.c -lbpf -lelf -lz -lzstd -lsnappy "$LZ4LIB" -o collector
 
 echo "built: $(pwd)/collector  +  jsse_collector.bpf.o"
