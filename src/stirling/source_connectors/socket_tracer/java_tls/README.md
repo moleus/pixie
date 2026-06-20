@@ -106,6 +106,13 @@ small and mirror the OpenSSL/Go/Node patterns:
 | `uprobe_manager.h` | `kJavaTLSUProbes` spec; `DeployJavaTLSUProbes` / `AttachJavaTLSUProbes` decls; `java_tls_probed_binaries_`. |
 | `uprobe_manager.cc` | Implement attach/deploy (mirrors `AttachOpenSSLUProbesOnDynamicLib`); wire into `DeployUProbes`. |
 
+The Stirling-side changes are compile-validated with Bazel on this environment:
+`//…/bcc_bpf:socket_trace` (the real BPF clang compile) builds successfully with
+`jsse_trace.c` in the include chain — so the new probe, the `kJavaJSSESource`
+enum, and the `process_data`/`set_conn_as_ssl` calls all type-check against
+Pixie's actual headers. (See `RESEARCH.md` §7 for the one-time JVM-truststore flags
+Bazel needs behind the sandbox's TLS-intercepting proxy.)
+
 `DetectApplication()` already recognized `Application::kJava`, and the data-event
 struct already carries `ssl_source`, so the connection tracker, Kafka parser, and
 `kafka_events` table light up automatically. The only user-visible change is that
@@ -117,7 +124,7 @@ Components in this directory:
 |------|------------|
 | `native/` | `libpixie_jsse.so`: the JNI bridge + the stable `pixie_jsse_plaintext` uprobe target. |
 | `agent/`  | `pixie-jsse-agent.jar`: ByteBuddy agent that instruments `SslTransportLayer`. |
-| `collector/` | A standalone eBPF "mini-PEM" (libbpf) that decodes Kafka and prints table rows — stands in for the full Stirling pipeline so the approach is runnable without building all of Pixie. |
+| `collector/` | A standalone eBPF "mini-PEM" (libbpf) that decodes Kafka and prints table rows — stands in for the full Stirling pipeline so the approach is runnable without building all of Pixie. Includes `kafka_parser.h`, a real from-scratch Kafka wire decoder (request header, Produce/Fetch → RecordBatch v2 → individual key/value records; flexible/compact encodings; gzip+zstd decompression; correlation-id pairing). |
 | `scripts/` | `run_demo.sh` — one-shot end-to-end demo (certs → broker+agent → collector → produce/consume). |
 
 ---

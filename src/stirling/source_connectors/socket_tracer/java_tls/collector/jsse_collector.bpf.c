@@ -26,7 +26,7 @@ struct pt_regs_x64 {
   unsigned long ip, cs, flags, sp, ss;
 };
 
-#define MAX_DATA 4096
+#define MAX_DATA 32768
 
 struct jsse_event {
   unsigned long fd;
@@ -58,8 +58,12 @@ int probe_entry_jsse_plaintext(struct pt_regs_x64 *ctx) {
     return 0;
   }
 
+  // Clamp first (so len >= MAX_DATA does not wrap to a tiny value via the mask),
+  // then mask so the verifier can prove the bound for bpf_probe_read_user.
   unsigned int cap = len;
-  // Mask to a provable [0, MAX_DATA-1] range for the verifier.
+  if (cap > MAX_DATA - 1) {
+    cap = MAX_DATA - 1;
+  }
   cap &= (MAX_DATA - 1);
 
   e->fd = fd;
