@@ -197,8 +197,39 @@ void AgentAttachApp::SelectLibWithDLOpenOrDie() {
 }
 
 void AgentAttachApp::AttachOrDie() {
-  const std::string argent_args = AgentArtifactsPathArg(target_upid_).string();
+  // Two attach modes, distinguished by whether a Java agent jar is among the libs:
+  //
+  //  * JVMTI agent (default, used by the profiler's symbolization agent): load the native
+  //    .so directly as a JVMTI agent — `jattach <pid> load <lib.so> true <args>`.
+  //
+  //  * Java agent jar (used by the JSSE TLS-tracing agent): load the jar through the JVM's
+  //    built-in `instrument` agent (the JPLIS implementation that backs `-javaagent`) —
+  //    `jattach <pid> load instrument false <jar>=<args>`. The jar's agentmain runs and
+  //    System.load()s the native .so, so we pass the selected (dlopen-validated) .so path
+  //    as the agent argument. This is the documented jattach mechanism for loading a Java
+  //    agent into a running JVM, and works on already-loaded classes via retransformation.
+  std::filesystem::path agent_jar;
+  for (const auto& lib : agent_libs_) {
+    if (lib.extension() == ".jar") {
+      agent_jar = lib;
+      break;
+    }
+  }
+
   constexpr int argc = 4;
+  if (!agent_jar.empty()) {
+    const std::string instrument_opts = absl::Substitute("$0=$1", agent_jar.string(), lib_so_path_);
+    const char* argv[argc] = {"load", "instrument", "false", instrument_opts.c_str()};
+    const int r = jattach(target_upid_.pid, argc, argv);
+    char const* const msg = "AgentAttachApp finished (java agent). pid: $0, jar: $1, lib: $2, exit: $3";
+    LOG(INFO) << absl::Substitute(msg, target_upid_.pid, agent_jar, lib_so_path_, r);
+    if (r != 0) {
+      std::exit(r);
+    }
+    return;
+  }
+
+  const std::string argent_args = AgentArtifactsPathArg(target_upid_).string();
   const char* argv[argc] = {"load", lib_so_path_.c_str(), "true", argent_args.c_str()};
   const int r = jattach(target_upid_.pid, argc, argv);
   char const* const msg = "AgentAttachApp finished. pid: $0, lib: $1, exit code: $2";
