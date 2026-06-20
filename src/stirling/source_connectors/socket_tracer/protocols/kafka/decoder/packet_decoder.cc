@@ -18,6 +18,7 @@
 
 #include "src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder/packet_decoder.h"
 #include <string>
+#include <absl/strings/str_format.h>
 #include "src/common/base/byte_utils.h"
 #include "src/stirling/source_connectors/socket_tracer/protocols/kafka/common/types.h"
 
@@ -136,6 +137,15 @@ StatusOr<std::string> PacketDecoder::ExtractNullableString() {
     return ExtractCompactNullableString();
   }
   return ExtractRegularNullableString();
+}
+
+StatusOr<std::string> PacketDecoder::ExtractUUID() {
+  // A UUID is a fixed 16 raw bytes (not length-prefixed), independent of flexibility.
+  PX_ASSIGN_OR_RETURN(std::string raw, ExtractBytesCore<char>(16));
+  const auto* b = reinterpret_cast<const uint8_t*>(raw.data());
+  return absl::StrFormat(
+      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2], b[3],
+      b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
 }
 
 StatusOr<std::string> PacketDecoder::ExtractRegularBytes() {
