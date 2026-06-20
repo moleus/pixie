@@ -39,15 +39,30 @@ import net.bytebuddy.asm.Advice;
 public final class SslTransportLayerAdvice {
   private SslTransportLayerAdvice() {}
 
-  /** Advice for {@code int write(ByteBuffer src)}. */
+  /**
+   * Advice for {@code int write(ByteBuffer src)}.
+   *
+   * <p>{@code write()} may consume only part of {@code src} (the SSLEngine fills
+   * netWriteBuffer, which may not fully flush under socket back-pressure); the
+   * caller then retries with the same buffer. Capturing the whole remaining
+   * buffer on entry would therefore double-count the un-consumed tail on the next
+   * call. Instead we record the start position on entry and capture exactly the
+   * bytes consumed (start..position) on exit.
+   */
   public static final class Write {
     private Write() {}
 
     @Advice.OnMethodEnter
-    public static void enter(
+    public static int enter(@Advice.Argument(0) ByteBuffer src) {
+      return src == null ? -1 : src.position();
+    }
+
+    @Advice.OnMethodExit
+    public static void exit(
         @Advice.FieldValue("socketChannel") Object channel,
-        @Advice.Argument(0) ByteBuffer src) {
-      PixieCapture.onWrite(channel, src);
+        @Advice.Argument(0) ByteBuffer src,
+        @Advice.Enter int startPos) {
+      PixieCapture.onWriteConsumed(channel, src, startPos);
     }
   }
 
