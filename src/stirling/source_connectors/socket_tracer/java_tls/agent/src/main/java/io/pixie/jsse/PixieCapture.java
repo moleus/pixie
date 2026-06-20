@@ -53,18 +53,26 @@ public final class PixieCapture {
     enabled = v;
   }
 
-  /** Egress: {@code src} holds plaintext about to be wrapped/encrypted. */
-  public static void onWrite(Object channel, ByteBuffer src) {
-    if (!enabled || src == null) {
+  /**
+   * Egress: capture exactly the plaintext consumed by one {@code write(src)}
+   * call — bytes [startPos, src.position()). This avoids double-counting the
+   * un-consumed tail when {@code write()} is retried under back-pressure.
+   */
+  public static void onWriteConsumed(Object channel, ByteBuffer src, int startPos) {
+    if (!enabled || src == null || startPos < 0) {
       return;
     }
-    int remaining = src.remaining();
-    if (remaining <= 0) {
+    int endPos = src.position();
+    int n = endPos - startPos;
+    if (n <= 0) {
       return;
     }
     // duplicate() shares content but has an independent position/limit, so we
-    // never disturb the buffer Kafka is about to consume.
-    capture(channel, src.duplicate(), remaining, DIR_EGRESS);
+    // never disturb the buffer Kafka is using.
+    ByteBuffer view = src.duplicate();
+    view.position(startPos);
+    view.limit(endPos);
+    capture(channel, view, n, DIR_EGRESS);
   }
 
   /**

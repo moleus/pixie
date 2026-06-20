@@ -23,6 +23,17 @@
 #include <zlib.h>
 #include <zstd.h>
 
+/* lz4 *frame* API (Kafka uses the LZ4 frame format). liblz4 is present on this
+ * host but ships no header, so we declare the minimal surface ourselves and link
+ * -llz4. Passing NULL options avoids needing the options struct definition. */
+typedef struct LZ4F_dctx_s LZ4F_dctx;
+#define LZ4F_VERSION 100
+extern unsigned long LZ4F_createDecompressionContext(LZ4F_dctx **ctx, unsigned ver);
+extern unsigned long LZ4F_freeDecompressionContext(LZ4F_dctx *ctx);
+extern unsigned long LZ4F_decompress(LZ4F_dctx *ctx, void *dst, unsigned long *dstSize,
+                                     const void *src, unsigned long *srcSize, const void *opts);
+extern unsigned LZ4F_isError(unsigned long code);
+
 /* ----- Kafka API keys (subset we name) ----- */
 enum {
   KAPI_PRODUCE = 0, KAPI_FETCH = 1, KAPI_LIST_OFFSETS = 2, KAPI_METADATA = 3,
@@ -203,7 +214,15 @@ static int kafka_decompress(int codec, const uint8_t *in, int inlen, uint8_t *ou
     size_t n = ZSTD_decompress(out, outcap, in, inlen);
     return ZSTD_isError(n) ? -1 : (int)n;
   }
-  return -1;  /* snappy(2)/lz4(3): libs/headers not available here */
+  if (codec == 3) {  /* lz4 frame */
+    LZ4F_dctx *dctx = NULL;
+    if (LZ4F_isError(LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION))) return -1;
+    unsigned long dstSize = (unsigned long)outcap, srcSize = (unsigned long)inlen;
+    unsigned long r = LZ4F_decompress(dctx, out, &dstSize, in, &srcSize, NULL);
+    LZ4F_freeDecompressionContext(dctx);
+    return LZ4F_isError(r) ? -1 : (int)dstSize;
+  }
+  return -1;  /* snappy(2): xerial-framed snappy lib not available here */
 }
 
 /* ----- record-level callback ----- */
