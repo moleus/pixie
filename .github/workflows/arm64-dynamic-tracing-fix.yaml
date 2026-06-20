@@ -80,10 +80,9 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /root/.cache/bazel-disk
-        key: bazel-x86dt-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        key: bazel-x86dt-v2-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
         restore-keys: |
-          bazel-x86dt-
-          bazel-x86-
+          bazel-x86dt-v2-
     - name: Bazel config
       shell: bash
       run: |
@@ -128,10 +127,9 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /root/.cache/bazel-disk
-        key: bazel-x86pem-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        key: bazel-x86pem-v2-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
         restore-keys: |
-          bazel-x86pem-
-          bazel-x86-
+          bazel-x86pem-v2-
     - name: Bazel config
       shell: bash
       run: |
@@ -187,8 +185,8 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /root/.cache/bazel-disk
-        key: bazel-arm-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
-        restore-keys: bazel-arm-
+        key: bazel-arm-v2-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: bazel-arm-v2-
     - name: Bazel config
       shell: bash
       run: |
