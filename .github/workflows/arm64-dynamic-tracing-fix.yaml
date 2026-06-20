@@ -1,31 +1,23 @@
 ---
-# Verifies the arm64 dynamic-tracing (uprobe codegen) fix and publishes a PEM image.
+# Verifies the arm64 dynamic-tracing (uprobe codegen) fix and publishes a multiarch PEM image.
 #
-# Background: Pixie's dynamic Go tracer emitted x86-only `struct pt_regs` field names
-# (ctx->ax/bx/cx/di/si/r8-r11), so every uprobe failed to compile on arm64/Graviton.
-# The fix (code_gen.cc + obj_tools/abi_model.{cc,h}) selects the register set by
-# architecture. This workflow proves it: x86 still works (BPF tests), arm64 now
-# compiles, and it ships a multiarch PEM image to test on a real cluster.
-#
-# Performance design (why this is fast):
-#   * We build & push ONLY the PEM image (//k8s/vizier:pem_image_push), not the full
-#     7-image vizier bundle x2 arches. The PEM image (the stirling data collector that
-#     runs the uprobe codegen) is the only deliverable the arm64 verification needs.
-#     That alone cuts the image build from 14 images to 2.
-#   * Each architecture builds + pushes its OWN PEM image inside the job whose Bazel
-#     disk cache is already warm for that arch, and the two arch builds run in PARALLEL
-#     (previously one giant serial job rebuilt everything for both arches).
-#   * Building the aarch64 PEM image compiles the fixed dynamic tracer for aarch64, so it
-#     doubles as the arm64 compile check — no separate cross-compile step needed.
-#   * We push WITHOUT --config=stamp: the image tag comes from --//k8s:image_version, so
-#     stamping is unnecessary, and skipping it lets Bazel cache the pem binary's final
-#     link (version_linkstamp) across commits — warm runs skip the expensive relink.
-#   * A final tiny `assemble-pem-image` job stitches the multiarch manifest with
-#     `crane index append` — no Bazel compilation, so it finishes in seconds.
-#   * Running on the default branch (`main`) and on a weekly schedule seeds the shared Bazel
-#     disk cache: GitHub only shares the DEFAULT branch's caches across branches, so a warm
-#     cache on `main` turns feature-branch cold starts (no own cache yet) into near-warm runs
-#     instead of compiling stirling+carnot from scratch.
+# Performance design (all optimizations):
+#   * Build & push ONLY the PEM image (//k8s/vizier:pem_image_push), per-arch, in PARALLEL — not the
+#     full 7-image vizier bundle x2 arches (14 image builds -> 2).
+#   * test-x86 (DT build + BPF tests, --config=clang) and build-x86-pem (the x86_64 PEM image,
+#     -c opt --config=x86_64_sysroot) are SPLIT into parallel jobs: they compile disjoint Bazel
+#     configurations that share no objects, so one job would just serialize two full compiles.
+#   * build-arm64 cross-compiles + pushes the aarch64 PEM (which also compiles the arm64 fix).
+#   * Push WITHOUT --config=stamp so the pem final link is cached across commits.
+#   * assemble-pem-image stitches the multiarch manifest with crane (no Bazel build), seconds.
+#   * SHARED REMOTE CACHE (BuildBuddy) when secret BB_API_KEY is set: every branch reads AND writes
+#     ONE cache, so cold starts on any branch are near-eliminated. Falls back to local disk cache
+#     (no remote dependency) when the secret is absent.
+#   * Local --disk_cache (persisted via actions/cache) is the per-branch L1 in front of the remote
+#     cache; per-arch keys fall back (restore-keys) to a prior combined cache to stay warm.
+#   * Default-branch (main) + weekly schedule runs seed the shared caches so feature branches start warm.
+#   * Bazel flags tuned for this build: reuse sandbox dirs, bound the disk cache <10GB, and drop DWARF
+#     from fastbuild C++ (-g0) for a faster/smaller DT build (opt is already -g0, so the image is unchanged).
 name: arm64-dynamic-tracing-fix
 on:
   workflow_dispatch:
@@ -46,12 +38,11 @@ on:
   push:
     branches: ['main', 'arm64-fix', 'fix/arm64-dynamic-tracing', 'claude/wonderful-bell-nm4uhr']
   schedule:
-  # Weekly (Sun 07:09 UTC) run on the default branch to keep the shared Bazel disk cache warm
+  # Weekly (Sun 07:09 UTC) on the default branch to keep the shared Bazel cache warm
   # (GitHub evicts caches untouched for 7 days), so feature-branch cold starts stay near-warm.
   - cron: '9 7 * * 0'
 
-# Cancel superseded runs on the same ref so iteration doesn't pile up runners or race on
-# the per-branch Bazel cache.
+# Cancel superseded runs on the same ref so iteration doesn't pile up runners or race on the cache.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -61,13 +52,10 @@ permissions:
 
 env:
   IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
-  # OPTIONAL shared remote cache. Set repo secret BB_API_KEY (a free BuildBuddy org key, or any
-  # bazel-remote/EngFlow key) to give EVERY branch ONE shared read+write Bazel cache, so cold
-  # starts nearly vanish (any branch's build warms the cache for all). Empty => local disk cache
-  # only (no remote dependency, current behavior). See the "remote cache" step in each build job.
+  # OPTIONAL shared remote cache. Set repo secret BB_API_KEY (a free BuildBuddy org key with cache
+  # write, or any bazel-remote/EngFlow key) to give EVERY branch ONE shared read+write Bazel cache,
+  # so cold starts nearly vanish. Empty => local disk cache only (current behavior, no remote dep).
   BB_API_KEY: ${{ secrets.BB_API_KEY }}
-  # Scope every Bazel invocation to the dynamic-tracing surface the fix touches, so the
-  # build fits comfortably in a free runner + warm cache.
   DT_TARGETS: >-
     //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing/...
     //src/stirling/obj_tools:cc_library
@@ -79,15 +67,9 @@ env:
     //src/stirling/obj_tools:abi_model_test
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1) x86: build the changed targets, RUN the dynamic-tracing BPF tests, then
-  #    build & push the x86_64 PEM image — all from this job's warm x86 cache.
-  # ---------------------------------------------------------------------------
+  # 1) x86 tests only (no image): build the dynamic-tracing surface and RUN the BPF/unit tests.
   test-x86:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
-    permissions:
-      contents: read
-      packages: write
     container:
       image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
       options: --privileged           # needed for BPF/uprobe tests (requires_bpf,requires_root)
@@ -95,26 +77,30 @@ jobs:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
       with: { fetch-depth: 0 }
     - run: git config --global --add safe.directory "$(pwd)"
-    # Local Bazel disk cache, persisted across runs. No dependency on Pixie's BuildBuddy.
     - uses: actions/cache@v4
       with:
         path: /root/.cache/bazel-disk
-        key: bazel-x86-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
-        restore-keys: bazel-x86-
-    - name: Bazel config (no BES; disk cache)
+        key: bazel-x86dt-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: |
+          bazel-x86dt-
+          bazel-x86-
+    - name: Bazel config
       run: |
-        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
-        # Reuse sandbox dirs (big win for the hermetic-sysroot, many-small-actions C++ build)
-        # and bound the disk cache so it stays under GitHub's 10 GB/repo limit.
-        echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
-        echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
-        # Optional shared remote cache: one read+write cache across ALL branches (see env BB_API_KEY).
+        {
+          echo "build --disk_cache=/root/.cache/bazel-disk"
+          echo "build --experimental_reuse_sandbox_directories"
+          echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build:clang --copt=-g0"
+        } >> .bazelrc.local
         if [[ -n "${BB_API_KEY:-}" ]]; then
-          echo "build --remote_cache=grpcs://remote.buildbuddy.io" >> .bazelrc.local
-          echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}" >> .bazelrc.local
-          echo "build --remote_upload_local_results=true" >> .bazelrc.local
-          echo "build --experimental_remote_cache_compression" >> .bazelrc.local
-          echo "build --remote_timeout=600" >> .bazelrc.local
+          {
+            echo "build --remote_cache=grpcs://remote.buildbuddy.io"
+            echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}"
+            echo "build --remote_upload_local_results=true"
+            echo "build --experimental_remote_cache_compression"
+            echo "build --remote_timeout=600"
+            echo "build --remote_download_toplevel"
+          } >> .bazelrc.local
           echo "remote cache: ENABLED (shared across all branches)"
         else
           echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
@@ -124,35 +110,67 @@ jobs:
       run: bazel build --config=clang ${DT_TARGETS}
     - name: Run dynamic-tracing unit + integration tests (amd64)
       run: bazel test --config=clang --test_output=errors ${DT_TESTS}
+
+  # 2) x86 PEM image (parallel with tests): build & push the x86_64 PEM image.
+  build-x86-pem:
+    if: ${{ github.event.inputs.push_image != 'false' }}
+    runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    container:
+      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: { fetch-depth: 0 }
+    - run: git config --global --add safe.directory "$(pwd)"
+    - uses: actions/cache@v4
+      with:
+        path: /root/.cache/bazel-disk
+        key: bazel-x86pem-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: |
+          bazel-x86pem-
+          bazel-x86-
+    - name: Bazel config
+      run: |
+        {
+          echo "build --disk_cache=/root/.cache/bazel-disk"
+          echo "build --experimental_reuse_sandbox_directories"
+          echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build:clang --copt=-g0"
+        } >> .bazelrc.local
+        if [[ -n "${BB_API_KEY:-}" ]]; then
+          {
+            echo "build --remote_cache=grpcs://remote.buildbuddy.io"
+            echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}"
+            echo "build --remote_upload_local_results=true"
+            echo "build --experimental_remote_cache_compression"
+            echo "build --remote_timeout=600"
+            echo "build --remote_download_toplevel"
+          } >> .bazelrc.local
+          echo "remote cache: ENABLED (shared across all branches)"
+        else
+          echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
+        fi
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Login to GHCR
-      if: ${{ github.event.inputs.push_image != 'false' }}
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ github.token }}
     - name: Build & push x86_64 PEM image
-      if: ${{ github.event.inputs.push_image != 'false' }}
       shell: bash
       run: |
         set -ex
         TAG="arm64-fix-${GITHUB_SHA::9}"
-        # Inline of ci/image_utils.sh:push_images_for_arch, but WITHOUT --config=stamp.
-        # The image tag is set by --//k8s:image_version, so stamping is unnecessary;
-        # skipping it lets Bazel cache the pem final link across commits.
         bazel run -c opt --config=x86_64_sysroot \
           --//k8s:image_repository="${IMAGE_REPO}" \
           --//k8s:image_version="${TAG}-x86_64" \
           //k8s/vizier:pem_image_push >/dev/null
         echo "PUSHED x86_64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-x86_64"
 
-  # ---------------------------------------------------------------------------
-  # 2) arm64: build & push the aarch64 PEM image. Cross-compiling the PEM image
-  #    compiles the fixed dynamic tracer for aarch64 (the `#if defined(__aarch64__)`
-  #    branch), so this is both the arm64 compile check and the aarch64 deliverable.
-  #    (BPF tests can't run under qemu cross-emulation; real arm64 runtime is verified
-  #    on the cluster with the published image.)
-  # ---------------------------------------------------------------------------
+  # 3) aarch64 PEM image: cross-compile + push (also the arm64 compile check).
   build-arm64:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
     permissions:
@@ -171,16 +189,21 @@ jobs:
         restore-keys: bazel-arm-
     - name: Bazel config
       run: |
-        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
-        echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
-        echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
-        # Optional shared remote cache: one read+write cache across ALL branches (see env BB_API_KEY).
+        {
+          echo "build --disk_cache=/root/.cache/bazel-disk"
+          echo "build --experimental_reuse_sandbox_directories"
+          echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build:clang --copt=-g0"
+        } >> .bazelrc.local
         if [[ -n "${BB_API_KEY:-}" ]]; then
-          echo "build --remote_cache=grpcs://remote.buildbuddy.io" >> .bazelrc.local
-          echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}" >> .bazelrc.local
-          echo "build --remote_upload_local_results=true" >> .bazelrc.local
-          echo "build --experimental_remote_cache_compression" >> .bazelrc.local
-          echo "build --remote_timeout=600" >> .bazelrc.local
+          {
+            echo "build --remote_cache=grpcs://remote.buildbuddy.io"
+            echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}"
+            echo "build --remote_upload_local_results=true"
+            echo "build --experimental_remote_cache_compression"
+            echo "build --remote_timeout=600"
+            echo "build --remote_download_toplevel"
+          } >> .bazelrc.local
           echo "remote cache: ENABLED (shared across all branches)"
         else
           echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
@@ -199,25 +222,19 @@ jobs:
       run: |
         set -ex
         TAG="arm64-fix-${GITHUB_SHA::9}"
-        # Cross-compiles the fixed dynamic tracer for aarch64 as part of the PEM image.
         bazel run -c opt --config=aarch64_sysroot \
           --//k8s:image_repository="${IMAGE_REPO}" \
           --//k8s:image_version="${TAG}-aarch64" \
           //k8s/vizier:pem_image_push >/dev/null
         echo "PUSHED aarch64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-aarch64"
     - name: Cross-compile the PEM image for aarch64 (verification only)
-      # When not pushing, still prove the aarch64 PEM image compiles end-to-end.
       if: ${{ github.event.inputs.push_image == 'false' }}
       run: bazel build --config=aarch64_sysroot //src/vizier/services/agent/pem:pem_image
 
-  # ---------------------------------------------------------------------------
-  # 3) Assemble the MULTIARCH PEM image from the two per-arch images pushed above.
-  #    This is pure manifest surgery (crane) — no Bazel build — so it's seconds.
-  #    Deploy this image's arm64 manifest to a Graviton cluster to verify the fix.
-  # ---------------------------------------------------------------------------
+  # 4) Assemble the multiarch PEM manifest (crane only). Gated on tests passing (needs test-x86).
   assemble-pem-image:
     if: ${{ github.event.inputs.push_image != 'false' }}
-    needs: [test-x86, build-arm64]
+    needs: [test-x86, build-x86-pem, build-arm64]
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
     permissions:
       contents: read
@@ -225,7 +242,6 @@ jobs:
     container:
       image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
     env:
-      # Optional: set COSIGN_PRIVATE_KEY / COSIGN_PASSWORD secrets to sign; otherwise skipped.
       COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
     steps:
