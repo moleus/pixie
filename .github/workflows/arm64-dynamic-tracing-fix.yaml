@@ -5,19 +5,23 @@
 # (ctx->ax/bx/cx/di/si/r8-r11), so every uprobe failed to compile on arm64/Graviton.
 # The fix (code_gen.cc + obj_tools/abi_model.{cc,h}) selects the register set by
 # architecture. This workflow proves it: x86 still works (BPF tests), arm64 now
-# compiles (cross-build), and it ships a multiarch PEM image to test on a real cluster.
+# compiles, and it ships a multiarch PEM image to test on a real cluster.
 #
 # Performance design (why this is fast):
 #   * We build & push ONLY the PEM image (//k8s/vizier:pem_image_push), not the full
-#     7-image vizier bundle x2 arches. The PEM image is the only deliverable the arm64
-#     verification needs.
+#     7-image vizier bundle x2 arches. The PEM image (the stirling data collector that
+#     runs the uprobe codegen) is the only deliverable the arm64 verification needs.
+#     That alone cuts the image build from 14 images to 2.
 #   * Each architecture builds + pushes its OWN PEM image inside the job whose Bazel
-#     disk cache is already warm for that arch (test-x86 -> x86_64, build-arm64 ->
-#     aarch64). The two arch builds run in PARALLEL.
-#   * A final tiny `assemble-pem-image` job just runs `crane index append` to stitch the
-#     multiarch manifest — no Bazel compilation at all (seconds, not hours).
-#   * Two per-arch disk caches (not three) keep us under GitHub's 10 GB/repo cache limit,
-#     avoiding the eviction thrash that forced cold rebuilds before.
+#     disk cache is already warm for that arch, and the two arch builds run in PARALLEL
+#     (previously one giant serial job rebuilt everything for both arches).
+#   * Building the aarch64 PEM image compiles the fixed dynamic tracer for aarch64, so it
+#     doubles as the arm64 compile check — no separate cross-compile step needed.
+#   * We push WITHOUT --config=stamp: the image tag comes from --//k8s:image_version, so
+#     stamping is unnecessary, and skipping it lets Bazel cache the pem binary's final
+#     link (version_linkstamp) across commits — warm runs skip the expensive relink.
+#   * A final tiny `assemble-pem-image` job stitches the multiarch manifest with
+#     `crane index append` — no Bazel compilation, so it finishes in seconds.
 name: arm64-dynamic-tracing-fix
 on:
   workflow_dispatch:
@@ -64,8 +68,7 @@ env:
 jobs:
   # ---------------------------------------------------------------------------
   # 1) x86: build the changed targets, RUN the dynamic-tracing BPF tests, then
-  #    build & push the x86_64 PEM image. Proves the amd64 path is unchanged and
-  #    ships the x86 half of the multiarch image — all from this job's warm x86 cache.
+  #    build & push the x86_64 PEM image — all from this job's warm x86 cache.
   # ---------------------------------------------------------------------------
   test-x86:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
@@ -88,14 +91,14 @@ jobs:
     - name: Bazel config (no BES; disk cache)
       run: |
         echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
+        # Reuse sandbox dirs (big win for the hermetic-sysroot, many-small-actions C++ build)
+        # and bound the disk cache so it stays under GitHub's 10 GB/repo limit.
+        echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
+        echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
     - name: Build changed targets (amd64)
       run: bazel build --config=clang ${DT_TARGETS}
     - name: Run dynamic-tracing unit + integration tests (amd64)
-      # These are pl_cc_test unit/integration tests (code_gen, dwarvifier, abi_model, goid)
-      # plus dynamic_tracer_test, which drives the full codegen against a real Go binary's
-      # DWARF. They run under the default clang config; --config=bpf would filter to ONLY
-      # requires_bpf/requires_root targets and exclude all of these.
       run: bazel test --config=clang --test_output=errors ${DT_TESTS}
     - name: Login to GHCR
       if: ${{ github.event.inputs.push_image != 'false' }}
@@ -109,17 +112,22 @@ jobs:
       shell: bash
       run: |
         set -ex
-        TAG="arm64-fix-$(git rev-parse --short HEAD)"
-        . ci/image_utils.sh
-        push_images_for_arch "x86_64" "//k8s/vizier:pem_image_push" "${TAG}" "${IMAGE_REPO}"
+        TAG="arm64-fix-${GITHUB_SHA::9}"
+        # Inline of ci/image_utils.sh:push_images_for_arch, but WITHOUT --config=stamp.
+        # The image tag is set by --//k8s:image_version, so stamping is unnecessary;
+        # skipping it lets Bazel cache the pem final link across commits.
+        bazel run -c opt --config=x86_64_sysroot \
+          --//k8s:image_repository="${IMAGE_REPO}" \
+          --//k8s:image_version="${TAG}-x86_64" \
+          //k8s/vizier:pem_image_push >/dev/null
         echo "PUSHED x86_64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-x86_64"
 
   # ---------------------------------------------------------------------------
-  # 2) arm64: cross-compile the dynamic tracer (this is what FAILED before the fix —
-  #    it exercises the `#if defined(__aarch64__)` branch at compile time) and then
-  #    build & push the aarch64 PEM image — all from this job's warm aarch64 cache.
-  #    (BPF tests can't run under qemu cross-emulation, hence build-only here; real
-  #    arm64 runtime is verified on the cluster with the published image.)
+  # 2) arm64: build & push the aarch64 PEM image. Cross-compiling the PEM image
+  #    compiles the fixed dynamic tracer for aarch64 (the `#if defined(__aarch64__)`
+  #    branch), so this is both the arm64 compile check and the aarch64 deliverable.
+  #    (BPF tests can't run under qemu cross-emulation; real arm64 runtime is verified
+  #    on the cluster with the published image.)
   # ---------------------------------------------------------------------------
   build-arm64:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
@@ -140,9 +148,9 @@ jobs:
     - name: Bazel config
       run: |
         echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
+        echo "build --experimental_reuse_sandbox_directories" >> .bazelrc.local
+        echo "build --experimental_disk_cache_gc_max_size=8G" >> .bazelrc.local
         echo "import %workspace%/.bazelrc.local" >> .bazelrc
-    - name: Cross-compile dynamic tracer for aarch64
-      run: bazel build --config=aarch64_sysroot ${DT_TARGETS}
     - name: Login to GHCR
       if: ${{ github.event.inputs.push_image != 'false' }}
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
@@ -155,11 +163,14 @@ jobs:
       shell: bash
       run: |
         set -ex
-        TAG="arm64-fix-$(git rev-parse --short HEAD)"
-        . ci/image_utils.sh
-        push_images_for_arch "aarch64" "//k8s/vizier:pem_image_push" "${TAG}" "${IMAGE_REPO}"
+        TAG="arm64-fix-${GITHUB_SHA::9}"
+        # Cross-compiles the fixed dynamic tracer for aarch64 as part of the PEM image.
+        bazel run -c opt --config=aarch64_sysroot \
+          --//k8s:image_repository="${IMAGE_REPO}" \
+          --//k8s:image_version="${TAG}-aarch64" \
+          //k8s/vizier:pem_image_push >/dev/null
         echo "PUSHED aarch64 PEM: ${IMAGE_REPO}/vizier-pem_image:${TAG}-aarch64"
-    - name: Cross-compile the PEM binary for aarch64 (verification only)
+    - name: Cross-compile the PEM image for aarch64 (verification only)
       # When not pushing, still prove the aarch64 PEM image compiles end-to-end.
       if: ${{ github.event.inputs.push_image == 'false' }}
       run: bazel build --config=aarch64_sysroot //src/vizier/services/agent/pem:pem_image
@@ -196,14 +207,13 @@ jobs:
       shell: bash
       run: |
         set -ex
-        TAG="arm64-fix-$(git rev-parse --short HEAD)"
+        TAG="arm64-fix-${GITHUB_SHA::9}"
         IMG="${IMAGE_REPO}/vizier-pem_image"
         crane index append \
           --manifest "${IMG}:${TAG}-x86_64" \
           --manifest "${IMG}:${TAG}-aarch64" \
           --tag "${IMG}:${TAG}"
         echo "PUSHED PEM: ${IMG}:${TAG}"
-        # Make signing optional: no-op when no cosign key is configured.
         if [[ -n "${COSIGN_PRIVATE_KEY:-}" ]]; then
           digest="$(crane digest "${IMG}:${TAG}")"
           cosign sign --key env://COSIGN_PRIVATE_KEY --yes -r "${IMG}:${TAG}@${digest}"
