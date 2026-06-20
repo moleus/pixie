@@ -956,6 +956,11 @@ std::vector<std::string> GenIncludes() {
   return {
       // For struct task_struct.
       "#include <linux/sched.h>",
+      // For div_u64 (used by pl_nsec_to_clock_t). Between linux v6.1 and v6.8,
+      // div_u64 is no longer pulled in transitively by linux/sched.h, so on
+      // newer kernels (notably arm64) the generated BPF would call an undeclared
+      // div_u64, producing an unloadable program. Include math64.h explicitly.
+      "#include <linux/math64.h>",
       // NSEC_PER_SEC is not defined within linux/sched.h for
       // 6.x kernels, so we define it here.
       "#ifndef NSEC_PER_SEC",

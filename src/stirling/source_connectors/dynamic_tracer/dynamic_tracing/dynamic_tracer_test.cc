@@ -314,6 +314,7 @@ tracepoints {
 
 const std::vector<std::string> kExpectedBCC = {
     "#include <linux/sched.h>",
+    "#include <linux/math64.h>",
     "#ifndef NSEC_PER_SEC",
     "#define NSEC_PER_SEC 1000000000ULL",
     "#endif",

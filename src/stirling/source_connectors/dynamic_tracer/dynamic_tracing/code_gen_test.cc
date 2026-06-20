@@ -395,6 +395,7 @@ TEST(GenProgramTest, SpecsAndCode) {
 
   const std::vector<std::string> expected_code_lines = {
       "#include <linux/sched.h>",
+      "#include <linux/math64.h>",
       "#ifndef NSEC_PER_SEC",
       "#define NSEC_PER_SEC 1000000000ULL",
       "#endif",
