@@ -22,6 +22,10 @@ sudo ./run_e2e.sh   # full eBPF path: uprobe -> ringbuf -> parser (needs root)
   parses it, and asserts the decoded record values exactly match what was built. The
   property `parse(build(records)) == records` holds across both wire encodings and all
   codecs (600k+ checks). Run under ASan+UBSan.
+- **`varint_kafka_parser.c`** — round-trips the unsigned/zig-zag varint decoders
+  (`kd_uvarint`/`kd_varint`/`kd_varlong`) over boundary and random values across the
+  full int32/int64/uint32 range under UBSan (12M+ checks). These decoders are the
+  parser's core; this is where the `kd_i64` UB lived.
 - **`fuzz_kafka_parser.c`** — under ASan+UBSan, drives `kafka_parse_request_header`,
   `kafka_parse_produce`, `kafka_parse_fetch_response`, and `kafka_decompress` with
   truncations of a valid frame (every prefix length), byte-flip mutations, pure

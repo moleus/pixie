@@ -16,7 +16,7 @@ LZ4LIB="$(ldconfig -p | awk -F'=> ' '/liblz4.so.1/{print $2; exit}')"
 LZ4LIB="${LZ4LIB:-/lib/$(uname -m)-linux-gnu/liblz4.so.1}"
 LIBS="-lz -lzstd -lsnappy $LZ4LIB"
 
-echo "[1/3] functional round-trip + parse"
+echo "[1/4] functional round-trip + parse"
 $CC -O2 -I.. test_kafka_parser.c $LIBS -o /tmp/test_kafka_parser
 /tmp/test_kafka_parser
 
@@ -27,11 +27,15 @@ san_build() {  # $1=src $2=out ; falls back to plain build if no sanitizer runti
   echo "  (sanitizer runtime unavailable; plain build)"; $SAN_CC -O1 -I.. "$1" $LIBS -o "$2"
 }
 
-echo "[2/3] property: parse(build(records)) round-trip, flexible+non-flexible, all codecs"
+echo "[2/4] property: parse(build(records)) round-trip, flexible+non-flexible, all codecs"
 san_build property_kafka_parser.c /tmp/property_kafka_parser
 /tmp/property_kafka_parser "${2:-20000}"
 
-echo "[3/3] fuzz: truncation / byte-flip / random / malformed under ASan+UBSan"
+echo "[3/4] property: varint/zigzag decoders round-trip over full int32/int64 range (UBSan)"
+if $SAN_CC -O1 -g -fsanitize=undefined -fno-sanitize-recover=all -I.. varint_kafka_parser.c $LIBS -o /tmp/varint_kafka_parser 2>/dev/null; then :; else $SAN_CC -O1 -I.. varint_kafka_parser.c $LIBS -o /tmp/varint_kafka_parser; fi
+/tmp/varint_kafka_parser
+
+echo "[4/4] fuzz: truncation / byte-flip / random / malformed under ASan+UBSan"
 san_build fuzz_kafka_parser.c /tmp/fuzz_kafka_parser
 /tmp/fuzz_kafka_parser "${1:-20000}"
 echo "ALL TESTS PASSED"
