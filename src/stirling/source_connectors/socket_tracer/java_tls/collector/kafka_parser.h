@@ -129,9 +129,9 @@ static int32_t kd_i32(kd_t *d) {
 }
 static int64_t kd_i64(kd_t *d) {
   if (!kd_need(d, 8)) return 0;
-  int64_t v = 0;
+  uint64_t v = 0;  /* accumulate unsigned: a signed left-shift that sets the sign bit is UB */
   for (int i = 0; i < 8; i++) v = (v << 8) | d->p[i];
-  d->p += 8; return v;
+  d->p += 8; return (int64_t)v;
 }
 /* unsigned varint (LEB128), up to 5 bytes (35 bits like Pixie). */
 static uint32_t kd_uvarint(kd_t *d) {
