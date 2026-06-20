@@ -17,6 +17,11 @@ sudo ./run_e2e.sh   # full eBPF path: uprobe -> ringbuf -> parser (needs root)
   snappy), runs it back through `kafka_decompress`, and asserts an exact
   round-trip; then builds a full **Produce v9 (flexible)** frame for each codec
   and asserts the parser recovers the topic, partition, and record values.
+- **`property_kafka_parser.c`** — property/round-trip test: builds a random Produce
+  frame (flexible v9 *and* non-flexible v7, random codec, random record count/sizes),
+  parses it, and asserts the decoded record values exactly match what was built. The
+  property `parse(build(records)) == records` holds across both wire encodings and all
+  codecs (600k+ checks). Run under ASan+UBSan.
 - **`fuzz_kafka_parser.c`** — under ASan+UBSan, drives `kafka_parse_request_header`,
   `kafka_parse_produce`, `kafka_parse_fetch_response`, and `kafka_decompress` with
   truncations of a valid frame (every prefix length), byte-flip mutations, pure

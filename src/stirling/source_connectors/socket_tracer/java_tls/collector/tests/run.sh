@@ -16,18 +16,22 @@ LZ4LIB="$(ldconfig -p | awk -F'=> ' '/liblz4.so.1/{print $2; exit}')"
 LZ4LIB="${LZ4LIB:-/lib/$(uname -m)-linux-gnu/liblz4.so.1}"
 LIBS="-lz -lzstd -lsnappy $LZ4LIB"
 
-echo "[1/2] functional round-trip + parse"
+echo "[1/3] functional round-trip + parse"
 $CC -O2 -I.. test_kafka_parser.c $LIBS -o /tmp/test_kafka_parser
 /tmp/test_kafka_parser
 
-echo "[2/2] fuzz under sanitizers (gcc has the runtime preinstalled more often)"
 SAN_CC="${SAN_CC:-gcc}"
-if $SAN_CC -O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all -I.. \
-      fuzz_kafka_parser.c $LIBS -o /tmp/fuzz_kafka_parser 2>/dev/null; then
-  /tmp/fuzz_kafka_parser "${1:-20000}"
-else
-  echo "  (sanitizer runtime unavailable; building plain and running a smoke pass)"
-  $SAN_CC -O1 -I.. fuzz_kafka_parser.c $LIBS -o /tmp/fuzz_kafka_parser
-  /tmp/fuzz_kafka_parser "${1:-20000}"
-fi
+SAN="-O1 -g -fsanitize=address,undefined -fno-sanitize-recover=all"
+san_build() {  # $1=src $2=out ; falls back to plain build if no sanitizer runtime
+  if $SAN_CC $SAN -I.. "$1" $LIBS -o "$2" 2>/dev/null; then return 0; fi
+  echo "  (sanitizer runtime unavailable; plain build)"; $SAN_CC -O1 -I.. "$1" $LIBS -o "$2"
+}
+
+echo "[2/3] property: parse(build(records)) round-trip, flexible+non-flexible, all codecs"
+san_build property_kafka_parser.c /tmp/property_kafka_parser
+/tmp/property_kafka_parser "${2:-20000}"
+
+echo "[3/3] fuzz: truncation / byte-flip / random / malformed under ASan+UBSan"
+san_build fuzz_kafka_parser.c /tmp/fuzz_kafka_parser
+/tmp/fuzz_kafka_parser "${1:-20000}"
 echo "ALL TESTS PASSED"
