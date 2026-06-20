@@ -15,6 +15,7 @@ $CLANG -O2 -g -target bpf -D__TARGET_ARCH_x86 -I"$ARCH_INC" \
   -c jsse_collector.bpf.c -o jsse_collector.bpf.o
 
 echo "compiling userspace collector..."
-$CLANG -O2 collector.c -lbpf -lelf -lz -o collector
+# -lz (gzip) and -lzstd (zstd) are used by the Kafka record-batch decompressor.
+$CLANG -O2 collector.c -lbpf -lelf -lz -lzstd -o collector
 
 echo "built: $(pwd)/collector  +  jsse_collector.bpf.o"
