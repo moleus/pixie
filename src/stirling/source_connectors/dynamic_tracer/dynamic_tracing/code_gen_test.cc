@@ -93,10 +93,20 @@ TEST(GenVariableTest, Register) {
   var.set_type(ScalarType::INT64);
   var.set_reg(Register::RC_PTR);
 
+  // The return-value registers are architecture specific (System V AMD64: RAX/RDX
+  // -> ctx->ax/ctx->dx; AAPCS64: X0/X1 -> ctx->regs[0]/ctx->regs[1]). GenRegister
+  // selects the field names at compile time via #if defined(__aarch64__).
+#if defined(__aarch64__)
+  ASSERT_OK_AND_THAT(GenScalarVariable(var), ElementsAre("uint64_t rc___[2];"
+                                                         "rc___[0] = ctx->regs[0];"
+                                                         "rc___[1] = ctx->regs[1];"
+                                                         "void* var = &rc___;"));
+#else
   ASSERT_OK_AND_THAT(GenScalarVariable(var), ElementsAre("uint64_t rc___[2];"
                                                          "rc___[0] = ctx->ax;"
                                                          "rc___[1] = ctx->dx;"
                                                          "void* var = &rc___;"));
+#endif
 
   var.set_type(ScalarType::INT64);
   var.set_reg(Register::RDX);
