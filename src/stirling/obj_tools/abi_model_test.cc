@@ -53,30 +53,71 @@ TEST(GolangStackABIModel, FunctionParameters) {
 TEST(GolangRegisterABIModel, FunctionParameters) {
   std::unique_ptr<ABICallingConventionModel> abi_model =
       ABICallingConventionModel::Create(ABI::kGolangRegister);
+  // Go's register ABI uses an architecture-specific integer register sequence
+  // (amd64: RAX,RBX,RCX,RDI,RSI,R8,R9,R10,R11; arm64: R0..R15). For this call
+  // sequence the assigned offsets and the stack-spill point are identical across
+  // architectures; only the register names differ. See GolangRegABIModel in
+  // abi_model.cc. The arm64 expectations exercise the #if defined(__aarch64__)
+  // register table when the test is cross-compiled and run under qemu.
+#if defined(__aarch64__)
+  const RegisterName a0 = RegisterName::kR0, a1 = RegisterName::kR1, a2 = RegisterName::kR2,
+                     a3 = RegisterName::kR3, a4 = RegisterName::kR4, a5 = RegisterName::kR5,
+                     a6 = RegisterName::kR6, a7 = RegisterName::kR7, a8 = RegisterName::kR8Arm;
+#else
+  const RegisterName a0 = RegisterName::kRAX, a1 = RegisterName::kRBX, a2 = RegisterName::kRCX,
+                     a3 = RegisterName::kRDI, a4 = RegisterName::kRSI, a5 = RegisterName::kR8,
+                     a6 = RegisterName::kR9, a7 = RegisterName::kR10, a8 = RegisterName::kR11;
+#endif
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
-                   (VarLocation{LocationType::kRegister, 0, {RegisterName::kRAX}}));
+                   (VarLocation{LocationType::kRegister, 0, {a0}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
-                   (VarLocation{LocationType::kRegister, 8, {RegisterName::kRBX}}));
+                   (VarLocation{LocationType::kRegister, 8, {a1}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
-                   (VarLocation{LocationType::kRegister, 16, {RegisterName::kRCX}}));
+                   (VarLocation{LocationType::kRegister, 16, {a2}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
-                   (VarLocation{LocationType::kRegister, 24, {RegisterName::kRDI}}));
-  EXPECT_OK_AND_EQ(
-      abi_model->PopLocation(TypeClass::kInteger, 8, 4, 2, false),
-      (VarLocation{LocationType::kRegister, 32, {RegisterName::kRSI, RegisterName::kR8}}));
+                   (VarLocation{LocationType::kRegister, 24, {a3}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 4, 2, false),
+                   (VarLocation{LocationType::kRegister, 32, {a4, a5}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
-                   (VarLocation{LocationType::kRegister, 48, {RegisterName::kR9}}));
+                   (VarLocation{LocationType::kRegister, 48, {a6}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 2, 2, 1, false),
-                   (VarLocation{LocationType::kRegister, 56, {RegisterName::kR10}}));
+                   (VarLocation{LocationType::kRegister, 56, {a7}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 120, 8, 15, false),
                    (VarLocation{LocationType::kStack, 0}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
-                   (VarLocation{LocationType::kRegister, 64, {RegisterName::kR11}}));
+                   (VarLocation{LocationType::kRegister, 64, {a8}}));
 }
 
 TEST(SystemVAMD64ABIModel, FunctionParameters) {
   std::unique_ptr<ABICallingConventionModel> abi_model =
       ABICallingConventionModel::Create(ABI::kSystemVAMD64);
+  // The C/C++ calling convention is architecture specific: System V AMD64 passes
+  // up to 6 integer args (RDI,RSI,RDX,RCX,R8,R9) while AAPCS64 (arm64) passes up
+  // to 8 (X0..X7 == R0..R7). The extra two arm64 registers change where this
+  // sequence spills to the stack, so the expectations genuinely diverge below
+  // (not just register names). See SysVABIModel in abi_model.cc.
+#if defined(__aarch64__)
+  // AAPCS64: 8 integer arg registers, so the 7th and 9th values that spill to the
+  // stack on amd64 still fit in X6/X7 here.
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegister, 0, {RegisterName::kR0}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
+                   (VarLocation{LocationType::kRegister, 8, {RegisterName::kR1}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
+                   (VarLocation{LocationType::kRegister, 16, {RegisterName::kR2}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
+                   (VarLocation{LocationType::kRegister, 24, {RegisterName::kR3}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 4, 2, false),
+                   (VarLocation{LocationType::kRegister, 32, {RegisterName::kR4}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegister, 40, {RegisterName::kR5}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 2, 2, 1, false),
+                   (VarLocation{LocationType::kRegister, 48, {RegisterName::kR6}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 120, 8, 15, false),
+                   (VarLocation{LocationType::kStack, 0}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegister, 56, {RegisterName::kR7}}));
+#else
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
                    (VarLocation{LocationType::kRegister, 0, {RegisterName::kRDI}}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 4, 4, 1, false),
@@ -95,6 +136,50 @@ TEST(SystemVAMD64ABIModel, FunctionParameters) {
                    (VarLocation{LocationType::kStack, 8}));
   EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kInteger, 8, 8, 1, false),
                    (VarLocation{LocationType::kStack, 128}));
+#endif
+}
+
+// Floating-point arguments use a separate register file that the fix also ported to
+// arm64 (amd64 XMM0..XMM14 / arm64 V0..V15 for Go; XMM0..XMM7 / V0..V7 for the C ABI).
+// These land with loc_type kRegisterFP. Exercise the first four FP args on both arches.
+TEST(GolangRegisterABIModel, FloatParameters) {
+  std::unique_ptr<ABICallingConventionModel> abi_model =
+      ABICallingConventionModel::Create(ABI::kGolangRegister);
+#if defined(__aarch64__)
+  const RegisterName f0 = RegisterName::kV0, f1 = RegisterName::kV1, f2 = RegisterName::kV2,
+                     f3 = RegisterName::kV3;
+#else
+  const RegisterName f0 = RegisterName::kXMM0, f1 = RegisterName::kXMM1, f2 = RegisterName::kXMM2,
+                     f3 = RegisterName::kXMM3;
+#endif
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 0, {f0}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 4, 4, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 8, {f1}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 16, {f2}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 24, {f3}}));
+}
+
+TEST(SystemVAMD64ABIModel, FloatParameters) {
+  std::unique_ptr<ABICallingConventionModel> abi_model =
+      ABICallingConventionModel::Create(ABI::kSystemVAMD64);
+#if defined(__aarch64__)
+  const RegisterName f0 = RegisterName::kV0, f1 = RegisterName::kV1, f2 = RegisterName::kV2,
+                     f3 = RegisterName::kV3;
+#else
+  const RegisterName f0 = RegisterName::kXMM0, f1 = RegisterName::kXMM1, f2 = RegisterName::kXMM2,
+                     f3 = RegisterName::kXMM3;
+#endif
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 0, {f0}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 4, 4, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 8, {f1}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 16, {f2}}));
+  EXPECT_OK_AND_EQ(abi_model->PopLocation(TypeClass::kFloat, 8, 8, 1, false),
+                   (VarLocation{LocationType::kRegisterFP, 24, {f3}}));
 }
 
 }  // namespace obj_tools
