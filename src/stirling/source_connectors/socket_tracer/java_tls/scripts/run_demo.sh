@@ -20,7 +20,8 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 JT="$(cd "$HERE/.." && pwd)"                 # the java_tls directory
 : "${KAFKA_HOME:?set KAFKA_HOME to a Kafka 3.x distribution directory}"
-: "${JAVA_HOME:=/usr/lib/jvm/java-21-openjdk-amd64}"
+# Default JDK path is Debian/Ubuntu arch-suffixed (amd64 / arm64).
+: "${JAVA_HOME:=/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
 WORK="${WORK:-/tmp/pixie-jsse-demo}"
 PASS=pixiepass
 AGENT="$JT/agent/target/pixie-jsse-agent.jar"

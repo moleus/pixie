@@ -18,13 +18,35 @@
 char LICENSE[] SEC("license") = "GPL";
 
 // We read the userspace argument registers directly out of pt_regs. Defining
-// the x86-64 layout ourselves avoids any dependency on vmlinux BTF or kernel
-// headers (which are absent on minimal/over-the-web environments).
-struct pt_regs_x64 {
+// the layout ourselves (per architecture) avoids any dependency on vmlinux BTF
+// or kernel headers (which are absent on minimal/over-the-web environments).
+//
+// A uprobe's pt_regs holds the *traced process'* registers, whose architecture
+// equals the host's; the collector is built for the host it runs on (build.sh
+// passes -D__TARGET_ARCH_<arch>), so this compile-time selection always matches
+// the target. The C calling convention picks the argument registers:
+//   x86-64 (System V): RDI, RSI, RDX, RCX
+//   arm64  (AAPCS64):  X0,  X1,  X2,  X3  == pt_regs->regs[0..3]
+#if defined(__TARGET_ARCH_arm64)
+struct pt_regs_arch {
+  unsigned long regs[31];
+  unsigned long sp, pc, pstate;
+};
+#define JSSE_ARG0(ctx) ((ctx)->regs[0])
+#define JSSE_ARG1(ctx) ((ctx)->regs[1])
+#define JSSE_ARG2(ctx) ((ctx)->regs[2])
+#define JSSE_ARG3(ctx) ((ctx)->regs[3])
+#else
+struct pt_regs_arch {
   unsigned long r15, r14, r13, r12, bp, bx;
   unsigned long r11, r10, r9, r8, ax, cx, dx, si, di, orig_ax;
   unsigned long ip, cs, flags, sp, ss;
 };
+#define JSSE_ARG0(ctx) ((ctx)->di)
+#define JSSE_ARG1(ctx) ((ctx)->si)
+#define JSSE_ARG2(ctx) ((ctx)->dx)
+#define JSSE_ARG3(ctx) ((ctx)->cx)
+#endif
 
 #define MAX_DATA 32768
 
@@ -43,11 +65,11 @@ struct {
 } events SEC(".maps");
 
 SEC("uprobe/pixie_jsse_plaintext")
-int probe_entry_jsse_plaintext(struct pt_regs_x64 *ctx) {
-  unsigned long fd = ctx->di;             // arg0
-  unsigned int direction = (unsigned int)ctx->si;  // arg1
-  const char *buf = (const char *)ctx->dx;         // arg2
-  unsigned int len = (unsigned int)ctx->cx;        // arg3
+int probe_entry_jsse_plaintext(struct pt_regs_arch *ctx) {
+  unsigned long fd = JSSE_ARG0(ctx);                      // arg0
+  unsigned int direction = (unsigned int)JSSE_ARG1(ctx);  // arg1
+  const char *buf = (const char *)JSSE_ARG2(ctx);         // arg2
+  unsigned int len = (unsigned int)JSSE_ARG3(ctx);        // arg3
 
   if ((long)fd <= 2 || buf == 0 || len == 0) {
     return 0;

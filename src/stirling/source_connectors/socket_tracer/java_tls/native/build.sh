@@ -11,7 +11,8 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${JAVA_HOME:=/usr/lib/jvm/java-21-openjdk-amd64}"
+# Default JDK path is Debian/Ubuntu arch-suffixed (amd64 / arm64).
+: "${JAVA_HOME:=/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture 2>/dev/null || echo amd64)}"
 CC="${CC:-clang}"
 OUT="${OUT:-libpixie_jsse.so}"
 
