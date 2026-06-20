@@ -1,0 +1,172 @@
+---
+# Verifies the arm64 dynamic-tracing (uprobe codegen) fix and publishes a PEM image.
+#
+# Background: Pixie's dynamic Go tracer emitted x86-only `struct pt_regs` field names
+# (ctx->ax/bx/cx/di/si/r8-r11), so every uprobe failed to compile on arm64/Graviton.
+# The fix (code_gen.cc + obj_tools/abi_model.{cc,h}) selects the register set by
+# architecture. This workflow proves it: x86 still works (BPF tests), arm64 now
+# compiles (cross-build), and it ships a multiarch PEM image to test on a real cluster.
+#
+# Runners: uses free public GitHub runners. Heavy Bazel build — set the largest runner
+# labels your repo allows via the dispatch inputs, and let the Bazel disk cache warm up.
+name: arm64-dynamic-tracing-fix
+on:
+  workflow_dispatch:
+    inputs:
+      x86_runner:
+        description: 'x86 runner label (larger = faster; e.g. ubuntu-latest or a configured larger runner)'
+        default: 'ubuntu-latest'
+      arm_runner:
+        description: 'arm64 runner label (free for public repos)'
+        default: 'ubuntu-24.04-arm'
+      image_repo:
+        description: 'Registry to push the PEM image to (public)'
+        default: 'ghcr.io/moleus'
+      push_image:
+        description: 'Build & push the multiarch PEM image'
+        type: boolean
+        default: true
+  push:
+    branches: ['arm64-fix', 'fix/arm64-dynamic-tracing']
+
+permissions:
+  contents: read
+
+env:
+  # Scope every Bazel invocation to the dynamic-tracing surface the fix touches, so the
+  # build fits comfortably in a free runner + warm cache.
+  DT_TARGETS: >-
+    //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing/...
+    //src/stirling/obj_tools:cc_library
+  DT_TESTS: >-
+    //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:code_gen_test
+    //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:dwarvifier_test
+    //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:dynamic_tracer_test
+    //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:goid_test
+    //src/stirling/obj_tools:abi_model_test
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) x86: build the changed targets and RUN the dynamic-tracing BPF tests.
+  #    Proves the amd64 path is unchanged (no regression) and the uprobe codegen
+  #    actually compiles + loads BPF (privileged container).
+  # ---------------------------------------------------------------------------
+  test-x86:
+    runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    container:
+      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+      options: --privileged           # needed for BPF/uprobe tests (requires_bpf,requires_root)
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: { fetch-depth: 0 }
+    - run: git config --global --add safe.directory "$(pwd)"
+    # Local Bazel disk cache, persisted across runs. No dependency on Pixie's BuildBuddy.
+    - uses: actions/cache@v4
+      with:
+        path: /root/.cache/bazel-disk
+        key: bazel-x86-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: bazel-x86-
+    - name: Bazel config (no BES; disk cache)
+      run: |
+        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
+        echo "build --config=clang" >> .bazelrc.local
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
+    - name: Build changed targets (amd64)
+      run: bazel build ${DT_TARGETS}
+    - name: Run dynamic-tracing tests, incl. BPF/uprobe (amd64)
+      run: bazel test --config=bpf --test_output=errors ${DT_TESTS}
+
+  # ---------------------------------------------------------------------------
+  # 2) arm64 compilation: cross-compile the dynamic tracer and the PEM image for
+  #    aarch64 from the x86 dev image. This is what FAILED before the fix — it
+  #    exercises the `#if defined(__aarch64__)` branch at compile time.
+  #    (BPF tests can't run under qemu cross-emulation, hence build-only here;
+  #    real arm64 runtime is verified on the cluster, see the plan.)
+  # ---------------------------------------------------------------------------
+  build-arm64:
+    runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    container:
+      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: { fetch-depth: 0 }
+    - run: git config --global --add safe.directory "$(pwd)"
+    - uses: actions/cache@v4
+      with:
+        path: /root/.cache/bazel-disk
+        key: bazel-arm-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: bazel-arm-
+    - name: Bazel config
+      run: |
+        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
+    - name: Cross-compile dynamic tracer for aarch64
+      run: bazel build --config=aarch64_sysroot ${DT_TARGETS}
+    - name: Cross-compile the PEM binary for aarch64
+      run: bazel build --config=aarch64_sysroot //src/vizier/services/agent/pem:pem_image
+
+  # ---------------------------------------------------------------------------
+  # 3) Build & push the MULTIARCH PEM image (x86 + arm64) to the fork's public
+  #    registry. Deploy this image's arm64 manifest to the Graviton cluster to
+  #    verify the fix end-to-end (uprobe reaches state: running).
+  # ---------------------------------------------------------------------------
+  push-pem-image:
+    if: ${{ github.event.inputs.push_image != 'false' }}
+    needs: [test-x86, build-arm64]
+    runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    container:
+      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+    env:
+      IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
+      # Optional: set COSIGN_PRIVATE_KEY / COSIGN_PASSWORD secrets to sign; otherwise skipped.
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: { fetch-depth: 0 }
+    - run: git config --global --add safe.directory "$(pwd)"
+    - uses: actions/cache@v4
+      with:
+        path: /root/.cache/bazel-disk
+        key: bazel-img-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: bazel-
+    - name: Bazel config
+      run: |
+        echo "build --disk_cache=/root/.cache/bazel-disk" >> .bazelrc.local
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
+    - name: Login to GHCR
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    - name: Build & push multiarch PEM image
+      shell: bash
+      run: |
+        set -ex
+        TAG="arm64-fix-$(git rev-parse --short HEAD)"
+        . ci/image_utils.sh
+        # Make signing optional: no-op when no cosign key is configured.
+        if [[ -z "${COSIGN_PRIVATE_KEY:-}" ]]; then
+          sign_image() { echo "cosign key not set; skipping signature for $1"; }
+        fi
+        # Build & push the vizier image bundle for both arches, then assemble the
+        # multiarch manifests (PEM included). Reuses Pixie's release machinery.
+        push_images_for_arch "x86_64"  "//k8s/vizier:vizier_images_push" "${TAG}" "${IMAGE_REPO}"
+        push_images_for_arch "aarch64" "//k8s/vizier:vizier_images_push" "${TAG}" "${IMAGE_REPO}"
+        bazel run -c opt --config=stamp \
+          --//k8s:image_repository="${IMAGE_REPO}" \
+          --//k8s:image_version="${TAG}" \
+          //k8s/vizier:list_image_bundle | while read -r image; do
+            case "$image" in *vizier-pem_image*)
+              push_multiarch_image "$image"
+              echo "PUSHED PEM: $image" ;;
+            esac
+          done
+        echo "## Deploy this PEM to a Graviton node to verify:" >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
+        echo "kubectl -n pixie set image ds/vizier-pem pem=${IMAGE_REPO}/vizier-pem_image:${TAG}" >> "$GITHUB_STEP_SUMMARY"
+        echo '```' >> "$GITHUB_STEP_SUMMARY"

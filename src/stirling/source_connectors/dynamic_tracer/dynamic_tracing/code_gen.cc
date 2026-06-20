@@ -243,15 +243,29 @@ std::string GenRegister(const ScalarVariable& var) {
     case Register::RC:
       return absl::Substitute("$0 $1 = ($0)PT_REGS_RC(ctx);", type, var.name());
     case Register::RC_PTR:
-      // In the System V AMD64 ABI, a return value less than 16B in size is held in registers.
-      // The first half is stored in rax, while the second half (if needed), is stored in rdx.
+      // A return value <= 16B is held in (up to) two integer return registers.
+      // The first half is in the first return register, the second half (if needed) in the second.
       // Copy the register values onto the BPF stack and return a pointer to the return value.
+      // The `struct pt_regs` field names are architecture specific, so we select at compile time:
+      // a PEM only traces processes on its own node, so this binary's architecture always matches
+      // the traced binary's (and the BPF target's).
+      //   amd64 (System V): RAX, RDX  -> ctx->ax, ctx->dx
+      //   arm64 (AAPCS64):  X0,  X1   -> ctx->regs[0], ctx->regs[1]
+#if defined(__aarch64__)
+      return absl::Substitute(
+          "uint64_t rc___[2];"
+          "rc___[0] = ctx->regs[0];"
+          "rc___[1] = ctx->regs[1];"
+          "void* $0 = &rc___;",
+          var.name());
+#else
       return absl::Substitute(
           "uint64_t rc___[2];"
           "rc___[0] = ctx->ax;"
           "rc___[1] = ctx->dx;"
           "void* $0 = &rc___;",
           var.name());
+#endif
     case Register::RAX:
       return absl::Substitute("$0 $1 = ($0)ctx->ax;", type, var.name());
     case Register::RBX:
@@ -281,9 +295,27 @@ std::string GenRegister(const ScalarVariable& var) {
     case Register::R15:
       return absl::Substitute("$0 $1 = ($0)ctx->r15;", type, var.name());
     case Register::SYSV_AMD64_ARGS_PTR:
-      // In the System V AMD64 ABI, there are 6 registers dedicated to passing arguments.
-      // Small arguments may be passed through these registers.
-      // Copy the register values onto the BPF stack and return a pointer to the return value.
+      // C/C++ calling-convention integer argument registers. Small arguments may be passed
+      // through these. Copy them onto the BPF stack and return a pointer to the array; the byte
+      // offset assigned by the ABI model (register_index * 8) then indexes into it.
+      // Architecture selected at compile time (PEM arch == traced binary arch == BPF target):
+      //   amd64 (System V): RDI, RSI, RDX, RCX, R8, R9       (6 registers)
+      //   arm64 (AAPCS64):  X0..X7 (== pt_regs->regs[0..7])  (8 registers)
+      // NOTE: the enum name is historical; on arm64 this carries the AAPCS64 sequence.
+#if defined(__aarch64__)
+      return absl::Substitute(
+          "uint64_t parm___[8];"
+          "parm___[0] = ctx->regs[0];"
+          "parm___[1] = ctx->regs[1];"
+          "parm___[2] = ctx->regs[2];"
+          "parm___[3] = ctx->regs[3];"
+          "parm___[4] = ctx->regs[4];"
+          "parm___[5] = ctx->regs[5];"
+          "parm___[6] = ctx->regs[6];"
+          "parm___[7] = ctx->regs[7];"
+          "void* $0 = &parm___;",
+          var.name());
+#else
       return absl::Substitute(
           "uint64_t parm___[6];"
           "parm___[0] = ctx->di;"
@@ -294,9 +326,36 @@ std::string GenRegister(const ScalarVariable& var) {
           "parm___[5] = ctx->r9;"
           "void* $0 = &parm___;",
           var.name());
+#endif
     case Register::GOLANG_ARGS_PTR:
-      // In the new Golang ABI, there are 9 registers dedicated to passing arguments.
-      // Copy the register values onto the BPF stack and return a pointer to the return value.
+      // Golang's register-based ABI (Go >= 1.17) passes integer args/results in a fixed
+      // sequence of integer registers. Copy them onto the BPF stack and return a pointer; the
+      // byte offset assigned by the ABI model (register_index * 8) then indexes into the array.
+      // The sequence and the `struct pt_regs` field names are architecture specific:
+      //   amd64: RAX,RBX,RCX,RDI,RSI,R8,R9,R10,R11            (9 registers)
+      //   arm64: R0..R15, contiguous in pt_regs->regs[]       (16 registers)
+#if defined(__aarch64__)
+      return absl::Substitute(
+          "uint64_t parm___[16];"
+          "parm___[0] = ctx->regs[0];"
+          "parm___[1] = ctx->regs[1];"
+          "parm___[2] = ctx->regs[2];"
+          "parm___[3] = ctx->regs[3];"
+          "parm___[4] = ctx->regs[4];"
+          "parm___[5] = ctx->regs[5];"
+          "parm___[6] = ctx->regs[6];"
+          "parm___[7] = ctx->regs[7];"
+          "parm___[8] = ctx->regs[8];"
+          "parm___[9] = ctx->regs[9];"
+          "parm___[10] = ctx->regs[10];"
+          "parm___[11] = ctx->regs[11];"
+          "parm___[12] = ctx->regs[12];"
+          "parm___[13] = ctx->regs[13];"
+          "parm___[14] = ctx->regs[14];"
+          "parm___[15] = ctx->regs[15];"
+          "void* $0 = &parm___;",
+          var.name());
+#else
       return absl::Substitute(
           "uint64_t parm___[9];"
           "parm___[0] = ctx->ax;"
@@ -310,6 +369,7 @@ std::string GenRegister(const ScalarVariable& var) {
           "parm___[8] = ctx->r11;"
           "void* $0 = &parm___;",
           var.name());
+#endif
     default:
       LOG(DFATAL) << absl::Substitute("Unsupported type: $0", type);
       return "";

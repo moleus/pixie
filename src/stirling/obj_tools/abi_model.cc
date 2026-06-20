@@ -73,6 +73,30 @@ StatusOr<VarLocation> GolangStackABIModel::PopLocation(TypeClass /* type_class *
 //-----------------------------------------------------------------------------
 
 GolangRegABIModel::GolangRegABIModel() : reg_size_(RegisterSize()) {
+  // The Golang register ABI's argument/result register sequence is architecture specific.
+  // We detect the architecture at compile time: a PEM only ever traces processes running on
+  // its own node, so the host architecture of this binary always matches the traced binary
+  // (and the BPF target). The corresponding pt_regs field names are emitted in code_gen.cc.
+#if defined(__aarch64__)
+  // arm64: integer args/results in R0..R15 (16), floating-point in V0..V15 (16).
+  int_arg_registers_ = {RegisterName::kR0,     RegisterName::kR1,     RegisterName::kR2,
+                        RegisterName::kR3,     RegisterName::kR4,     RegisterName::kR5,
+                        RegisterName::kR6,     RegisterName::kR7,     RegisterName::kR8Arm,
+                        RegisterName::kR9Arm,  RegisterName::kR10Arm, RegisterName::kR11Arm,
+                        RegisterName::kR12Arm, RegisterName::kR13Arm, RegisterName::kR14Arm,
+                        RegisterName::kR15Arm};
+
+  fp_arg_registers_ = {RegisterName::kV0,  RegisterName::kV1,  RegisterName::kV2,
+                       RegisterName::kV3,  RegisterName::kV4,  RegisterName::kV5,
+                       RegisterName::kV6,  RegisterName::kV7,  RegisterName::kV8,
+                       RegisterName::kV9,  RegisterName::kV10, RegisterName::kV11,
+                       RegisterName::kV12, RegisterName::kV13, RegisterName::kV14,
+                       RegisterName::kV15};
+
+  int_retval_registers_ = int_arg_registers_;
+  fp_retval_registers_ = fp_arg_registers_;
+#else
+  // amd64: integer args/results in RAX,RBX,RCX,RDI,RSI,R8,R9,R10,R11 (9), FP in XMM0..XMM14.
   int_arg_registers_ = {RegisterName::kRAX, RegisterName::kRBX, RegisterName::kRCX,
                         RegisterName::kRDI, RegisterName::kRSI, RegisterName::kR8,
                         RegisterName::kR9,  RegisterName::kR10, RegisterName::kR11};
@@ -92,6 +116,7 @@ GolangRegABIModel::GolangRegABIModel() : reg_size_(RegisterSize()) {
                           RegisterName::kXMM6,  RegisterName::kXMM7,  RegisterName::kXMM8,
                           RegisterName::kXMM9,  RegisterName::kXMM10, RegisterName::kXMM11,
                           RegisterName::kXMM12, RegisterName::kXMM13, RegisterName::kXMM14};
+#endif
 }
 
 StatusOr<VarLocation> GolangRegABIModel::PopLocation(TypeClass type_class, uint64_t type_size,
@@ -149,6 +174,22 @@ StatusOr<VarLocation> GolangRegABIModel::PopLocation(TypeClass type_class, uint6
 //-----------------------------------------------------------------------------
 
 SysVABIModel::SysVABIModel() : reg_size_(RegisterSize()) {
+  // The C/C++ calling convention is architecture specific (System V on amd64, AAPCS64 on arm64).
+  // As above, the host architecture of this PEM binary matches the traced binary's.
+#if defined(__aarch64__)
+  // AAPCS64: integer args in X0..X7, FP args in V0..V7, results in X0/X1 (and V0).
+  int_arg_registers_ = {RegisterName::kR0, RegisterName::kR1, RegisterName::kR2,
+                        RegisterName::kR3, RegisterName::kR4, RegisterName::kR5,
+                        RegisterName::kR6, RegisterName::kR7};
+
+  fp_arg_registers_ = {RegisterName::kV0, RegisterName::kV1, RegisterName::kV2,
+                       RegisterName::kV3, RegisterName::kV4, RegisterName::kV5,
+                       RegisterName::kV6, RegisterName::kV7};
+
+  int_retval_registers_ = {RegisterName::kR0, RegisterName::kR1};
+
+  fp_retval_registers_ = {RegisterName::kV0};
+#else
   int_arg_registers_ = {RegisterName::kRDI, RegisterName::kRSI, RegisterName::kRDX,
                         RegisterName::kRCX, RegisterName::kR8,  RegisterName::kR9};
 
@@ -159,6 +200,7 @@ SysVABIModel::SysVABIModel() : reg_size_(RegisterSize()) {
   int_retval_registers_ = {RegisterName::kRAX, RegisterName::kRDX};
 
   fp_retval_registers_ = {};
+#endif
 }
 
 // TODO(oazizi): Function is getting long. Consider splitting it up.
