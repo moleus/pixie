@@ -1,0 +1,167 @@
+# Build the java_tls "broker-side" artifacts so Kafka-over-TLS capture works out of
+# the box — no manual compiling. The PEM image (built by arm64-dynamic-tracing-fix.yaml)
+# is the in-cluster eBPF half; THIS workflow ships the pieces that run on the broker host:
+#
+#   * pixie-jsse-agent.jar  — the -javaagent attached to the JVM/broker (arch-independent)
+#   * libpixie_jsse.so      — the JNI bridge + stable uprobe trampoline (per-arch)
+#   * collector (+ .bpf.o)  — the standalone demo/debug collector (per-arch)
+#
+# Native pieces are real machine code, so we build them on real x86_64 and arm64 runners
+# (arm64 runners are free for public repos). Everything is uploaded as run artifacts and
+# also published to a rolling `java-tls-latest` pre-release for a stable download URL.
+#
+# These builds are fast (Maven + a few clang/gcc invocations — no Bazel), so this is
+# independent of, and much quicker than, the PEM image pipeline.
+name: java-tls-artifacts
+on:
+  workflow_dispatch:
+  push:
+    branches: ['arm64-fix']
+    paths:
+      - 'src/stirling/source_connectors/socket_tracer/java_tls/agent/**'
+      - 'src/stirling/source_connectors/socket_tracer/java_tls/native/**'
+      - 'src/stirling/source_connectors/socket_tracer/java_tls/collector/**'
+      - '.github/workflows/java-tls-artifacts.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # publish the rolling pre-release
+
+env:
+  JT: src/stirling/source_connectors/socket_tracer/java_tls
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Arch-independent Java agent jar (shaded ByteBuddy).
+  # ---------------------------------------------------------------------------
+  agent-jar:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Build agent jar
+      run: |
+        set -ex
+        cd "${JT}/agent"
+        mvn -B -ntp clean package
+        test -f target/pixie-jsse-agent.jar
+    - uses: actions/upload-artifact@v4
+      with:
+        name: pixie-jsse-agent-jar
+        path: ${{ env.JT }}/agent/target/pixie-jsse-agent.jar
+        if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Per-arch native bridge .so + standalone collector, built natively on each arch.
+  # ---------------------------------------------------------------------------
+  native-collector:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest,    arch: x86_64 }
+          - { runner: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: Install toolchain + decompressor libs
+      run: |
+        set -ex
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          clang llvm libbpf-dev libelf-dev zlib1g-dev libzstd-dev libsnappy-dev liblz4-dev
+    - name: Build native bridge (libpixie_jsse.so)
+      run: |
+        set -ex
+        cd "${JT}/native"
+        JAVA_HOME="${JAVA_HOME}" CC=clang ./build.sh
+        nm -D --defined-only libpixie_jsse.so | grep -E 'pixie_jsse_plaintext|Java_io_pixie'
+    - name: Build collector (+ BPF object)
+      run: |
+        set -ex
+        cd "${JT}/collector"
+        CLANG=clang ./build.sh
+    - name: Stage + package artifact
+      run: |
+        set -ex
+        STAGE="pixie-jsse-${{ matrix.arch }}"
+        mkdir -p "${STAGE}"
+        cp "${JT}/native/libpixie_jsse.so" "${STAGE}/"
+        cp "${JT}/collector/collector" "${JT}/collector/jsse_collector.bpf.o" "${STAGE}/"
+        cat > "${STAGE}/USAGE.md" <<'EOF'
+        # pixie-jsse (${{ matrix.arch }}) — Kafka-over-TLS capture, no broker code changes
+
+        On the Kafka broker host (this arch), start the broker with the agent + native lib:
+
+            export KAFKA_OPTS="-javaagent:/opt/pixie/pixie-jsse-agent.jar=/opt/pixie/libpixie_jsse.so"
+            # optional, for any non-Kafka JSSE app: add -Dpixie.jsse.mode=engine
+            <start kafka as usual>
+
+        Then deploy the matching multiarch PEM image to the cluster:
+
+            kubectl -n pixie set image ds/vizier-pem \
+              pem=ghcr.io/moleus/vizier-pem_image:arm64-fix-<sha>
+
+        Files:
+          libpixie_jsse.so     JNI bridge + stable eBPF uprobe trampoline (this arch)
+          pixie-jsse-agent.jar the -javaagent (arch-independent; separate artifact)
+          collector            standalone demo/debug reader of the eBPF ring buffer
+          jsse_collector.bpf.o the collector's eBPF object
+        EOF
+        tar -czf "${STAGE}.tar.gz" "${STAGE}"
+    - uses: actions/upload-artifact@v4
+      with:
+        name: pixie-jsse-${{ matrix.arch }}
+        path: pixie-jsse-${{ matrix.arch }}.tar.gz
+        if-no-files-found: error
+
+  # ---------------------------------------------------------------------------
+  # Publish everything to a rolling `java-tls-latest` pre-release (stable URL).
+  # ---------------------------------------------------------------------------
+  release:
+    needs: [agent-jar, native-collector]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+    - name: Assemble + publish rolling pre-release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -ex
+        mkdir -p out
+        cp dist/pixie-jsse-agent-jar/pixie-jsse-agent.jar out/
+        cp dist/pixie-jsse-x86_64/pixie-jsse-x86_64.tar.gz   out/
+        cp dist/pixie-jsse-aarch64/pixie-jsse-aarch64.tar.gz out/
+        cat > NOTES.md <<EOF
+        Broker-side artifacts for zero-instrumentation Kafka-over-TLS capture
+        (built from \`${GITHUB_SHA::9}\`). Pair with the PEM image
+        \`ghcr.io/moleus/vizier-pem_image:arm64-fix-${GITHUB_SHA::9}\`.
+
+        - \`pixie-jsse-agent.jar\` — JVM \`-javaagent\` (arch-independent)
+        - \`pixie-jsse-x86_64.tar.gz\` / \`pixie-jsse-aarch64.tar.gz\` — native \`libpixie_jsse.so\` + collector
+
+        Usage: \`export KAFKA_OPTS="-javaagent:pixie-jsse-agent.jar=libpixie_jsse.so"\`
+        EOF
+        TAG=java-tls-latest
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          gh release edit "$TAG" --notes-file NOTES.md --target "$GITHUB_SHA" --prerelease
+          gh release upload "$TAG" out/* --clobber
+        else
+          gh release create "$TAG" out/* \
+            --title "java_tls artifacts (latest)" --notes-file NOTES.md \
+            --prerelease --target "$GITHUB_SHA"
+        fi
+        echo "Published $TAG with: $(ls out | tr '\n' ' ')"
