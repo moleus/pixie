@@ -16,12 +16,46 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <zstd.h>
+
+#include <string>
+
 #include "src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder/packet_decoder.h"
 
 namespace px {
 namespace stirling {
 namespace protocols {
 namespace kafka {
+
+namespace {
+// Kafka RecordBatch compression codecs (low 3 bits of the batch attributes).
+constexpr int kCompressionNone = 0;
+constexpr int kCompressionZSTD = 4;
+
+// Streaming zstd decompress. Returns as much as fits in the cap; on a truncated
+// frame (the on-wire batch may be cut off at the capture limit) it still yields
+// the leading records, which is enough to recover their keys. Empty on failure.
+std::string ZstdDecompressRecords(std::string_view in) {
+  constexpr size_t kMaxOut = 1u << 20;  // 1 MiB bound, matches the capture ceiling
+  ZSTD_DStream* ds = ZSTD_createDStream();
+  if (ds == nullptr) {
+    return {};
+  }
+  ZSTD_initDStream(ds);
+  std::string out(kMaxOut, '\0');
+  ZSTD_inBuffer ib{in.data(), in.size(), 0};
+  ZSTD_outBuffer ob{out.data(), out.size(), 0};
+  while (ib.pos < ib.size && ob.pos < ob.size) {
+    const size_t ret = ZSTD_decompressStream(ds, &ob, &ib);
+    if (ZSTD_isError(ret) || ret == 0) {
+      break;  // error, or a frame finished
+    }
+  }
+  ZSTD_freeDStream(ds);
+  out.resize(ob.pos);
+  return out;
+}
+}  // namespace
 
 // Only supports Kafka version >= 0.11.0
 StatusOr<RecordMessage> PacketDecoder::ExtractRecordMessage() {
@@ -77,7 +111,6 @@ StatusOr<RecordBatch> PacketDecoder::ExtractRecordBatch(int32_t* offset) {
   PX_UNUSED(base_offset);
   PX_UNUSED(partition_leader_epoch);
   PX_UNUSED(crc);
-  PX_UNUSED(attributes);
   PX_UNUSED(last_offset_delta);
   PX_UNUSED(first_time_stamp);
   PX_UNUSED(max_time_stamp);
@@ -85,7 +118,35 @@ StatusOr<RecordBatch> PacketDecoder::ExtractRecordBatch(int32_t* offset) {
   PX_UNUSED(producer_epoch);
   PX_UNUSED(base_sequence);
 
-  PX_ASSIGN_OR_RETURN(r.records, ExtractRegularArray(&PacketDecoder::ExtractRecordMessage));
+  const int compression_codec = attributes & 0x07;
+  if (compression_codec == kCompressionNone) {
+    PX_ASSIGN_OR_RETURN(r.records, ExtractRegularArray(&PacketDecoder::ExtractRecordMessage));
+  } else if (compression_codec == kCompressionZSTD) {
+    // The record count is a plain int32; the records that follow are a single
+    // compressed blob spanning the rest of the batch. Decompress, then parse the
+    // records out of the decompressed bytes with a fresh decoder.
+    PX_ASSIGN_OR_RETURN(int32_t num_records, ExtractInt32());
+    // Bytes from partition_leader_epoch through record_count, i.e. the fixed batch
+    // header after the (already-consumed) base_offset + batch_length fields.
+    constexpr int32_t kBatchHeaderAfterLength = 49;
+    const int32_t blob_len = length - kBatchHeaderAfterLength;
+    if (num_records > 0 && blob_len > 0) {
+      PX_ASSIGN_OR_RETURN(std::string blob, ExtractBytesCore<char>(blob_len));
+      const std::string decompressed = ZstdDecompressRecords(blob);
+      if (!decompressed.empty()) {
+        PacketDecoder sub(decompressed);
+        for (int32_t i = 0; i < num_records; ++i) {
+          auto record_or = sub.ExtractRecordMessage();
+          if (!record_or.ok()) {
+            break;  // best-effort: blob may be truncated at the capture limit
+          }
+          r.records.push_back(record_or.ValueOrDie());
+        }
+      }
+    }
+  }
+  // Other codecs (gzip/snappy/lz4) are left unparsed (records empty) rather than
+  // walking the compressed bytes as if they were records, which yields garbage.
   PX_RETURN_IF_ERROR(JumpToOffset());
 
   *offset += length + kBaseOffsetLength + kLengthLength;
