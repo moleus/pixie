@@ -390,14 +390,16 @@ static __inline enum message_type_t infer_mysql_message(const char* buf, size_t 
 //     request_api_version => INT16
 //     correlation_id => INT32
 static __inline enum message_type_t infer_kafka_request(const char* buf) {
-  // API is Kafka's terminology for opcode.
-  static const int kNumAPIs = 62;
-  // Highest request api_version across all APIs in current Kafka (Fetch is the
-  // ceiling at v17 as of Kafka 3.9). This is a global cap used only for cheap
-  // in-kernel classification; a too-low value makes high-version connections
-  // (e.g. Fetch v13-17 between brokers/consumers) fail inference and the
-  // connection's protocol is never identified.
-  static const int kMaxAPIVersion = 17;
+  // API is Kafka's terminology for opcode. Highest api_key in modern Kafka (4.x adds
+  // the KRaft/consumer-group/telemetry APIs). This is a coarse upper bound used only
+  // for cheap in-kernel classification; a too-low value rejects connections whose
+  // first inferred frame uses a newer api_key.
+  static const int kNumAPIs = 90;
+  // Highest request api_version across all APIs in modern Kafka. Verified against a
+  // real Kafka 4.3 broker, whose consumers negotiate Fetch v18; this global cap must
+  // cover it or those connections fail inference and never get a protocol. A too-low
+  // value here was an additional reason modern-Kafka connections stayed Unknown.
+  static const int kMaxAPIVersion = 20;
 
   const int16_t request_API_key = read_big_endian_int16(buf);
   if (request_API_key < 0 || request_API_key > kNumAPIs) {
@@ -464,20 +466,35 @@ static __inline enum message_type_t infer_kafka_message(const char* buf, size_t 
   // Path 2: the length header is in this read: buf = [int32 length][payload...]. Accept
   // when the read holds at least one full frame -- count == message_size (exact) or
   // count > message_size (coalesced); the declared length correctly predicting a frame
-  // boundary inside the read is itself corroborating. Long messages whose payload spans
-  // multiple reads are handled by Path 1 (the broker reads the 4-byte length first).
-  if (count < (size_t)kMinRequestLength) {
-    return kUnknown;
+  // boundary inside the read is itself corroborating.
+  if (count >= (size_t)kMinRequestLength) {
+    const int32_t declared = read_big_endian_int32(buf);
+    const int32_t message_size = declared + 4;
+    if (declared >= kMinReqHeader && declared <= kKafkaMaxMessageSize &&
+        count >= (size_t)message_size && infer_kafka_request(buf + 4) == kRequest) {
+      return kRequest;
+    }
   }
-  const int32_t declared = read_big_endian_int32(buf);
-  if (declared < kMinReqHeader || declared > kKafkaMaxMessageSize) {
-    return kUnknown;
+
+  // Path 3 (payload-first): the buffer begins at the request header itself, with the
+  // 4-byte length prefix consumed by an EARLIER read. Real Kafka brokers on JVM NIO
+  // read this way -- on a busy, multiplexed network thread the length read is often not
+  // the one immediately preceding the payload on this connection, so neither the
+  // length-in-buf path nor the use_prev_buf path fires and clean Kafka stays Unknown
+  // (observed on a real Kafka 4.3 broker: payloads that begin at api_key, e.g. Fetch
+  // v18, with no length prefix in the same buffer). Classify directly from the header,
+  // additionally requiring that the client_id length (the NULLABLE_STRING right after
+  // the 8-byte header) fits within this read; that extra constraint keeps the
+  // false-positive rate low without a self-describing length prefix. No prepend: the
+  // length is already in the connection's byte stream from the earlier read.
+  if (count >= (size_t)(kMinReqHeader + 2) && infer_kafka_request(buf) == kRequest) {
+    const int16_t client_id_len = read_big_endian_int16(buf + kMinReqHeader);
+    if (client_id_len >= -1 && client_id_len <= (int32_t)(count - (kMinReqHeader + 2))) {
+      return kRequest;
+    }
   }
-  const int32_t message_size = declared + 4;
-  if (count < (size_t)message_size) {
-    return kUnknown;
-  }
-  return infer_kafka_request(buf + 4);
+
+  return kUnknown;
 }
 
 // Const Reference: https://www.rabbitmq.com/resources/specs/amqp0-9-1.xml

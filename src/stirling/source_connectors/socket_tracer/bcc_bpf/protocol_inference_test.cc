@@ -385,6 +385,36 @@ TEST(ProtocolInferenceTest, KafkaPartialCoalescedAndVersions) {
         infer_protocol(reinterpret_cast<const char*>(kBadHeader), sizeof(kBadHeader), &conn_info);
     EXPECT_NE(m.protocol, kProtocolKafka);
   }
+
+  // Payload-first (the real Kafka 4.x broker pattern): the read begins at the request
+  // header (api_key), the 4-byte length prefix was consumed by an EARLIER read, and the
+  // prior read on this connection was NOT a clean 4-byte length. Neither the
+  // length-in-buf path nor the use_prev_buf path fires, so Path 3 must classify directly
+  // from the header (guarded by a client_id length that fits the read). Without this,
+  // clean modern-Kafka connections stay protocol=Unknown and kafka_events stays empty.
+  {
+    // ApiVersions v4 request payload (api_key 18), no length prefix; prior read was an
+    // 8-byte selector/eventfd read on the multiplexed network thread.
+    struct conn_info_t conn_info = {};
+    conn_info.prev_count = 8;
+    constexpr uint8_t kApiVersionsPayload[] = {0x00, 0x12, 0x00, 0x04, 0x00, 0x00, 0x00, 0x01,
+                                               0x00, 0x03, 'a', 'b', 'c', 0x00, 0x00};
+    auto m = infer_protocol(reinterpret_cast<const char*>(kApiVersionsPayload),
+                            sizeof(kApiVersionsPayload), &conn_info);
+    EXPECT_EQ(m.protocol, kProtocolKafka);
+    EXPECT_FALSE(conn_info.prepend_length_header);  // length already in the stream
+  }
+  {
+    // Fetch v18 payload-first (the dominant request on a busy 4.x broker); prior read on
+    // this conn was another payload, not a 4-byte length.
+    struct conn_info_t conn_info = {};
+    conn_info.prev_count = 162;
+    constexpr uint8_t kFetchPayload[] = {0x00, 0x01, 0x00, 0x12, 0x00, 0x00, 0x00, 0x07,
+                                         0x00, 0x01, '1', 0x00, 0x00};
+    auto m = infer_protocol(reinterpret_cast<const char*>(kFetchPayload), sizeof(kFetchPayload),
+                            &conn_info);
+    EXPECT_EQ(m.protocol, kProtocolKafka);
+  }
 }
 
 TEST(ProtocolInferenceTest, NATS) {

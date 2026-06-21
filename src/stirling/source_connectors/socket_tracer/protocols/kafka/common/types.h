@@ -238,8 +238,8 @@ inline const absl::flat_hash_map<APIKey, APIVersionData> APIVersionMap = {
     // A too-low max makes IsSupportedAPIVersion reject the frame in FindFrameBoundary,
     // so these common operations would never be decoded on modern Kafka.
     {APIKey::kProduce, {1, 12, 9}},
-    {APIKey::kFetch, {0, 17, 12}},
-    {APIKey::kListOffsets, {0, 10, 6}},
+    {APIKey::kFetch, {0, 18, 12}},
+    {APIKey::kListOffsets, {0, 11, 6}},
     {APIKey::kMetadata, {0, 13, 9}},
     {APIKey::kLeaderAndIsr, {0, 5, 4}},
     {APIKey::kStopReplica, {0, 3, 2}},
