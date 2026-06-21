@@ -63,17 +63,6 @@ TEST(KafkaParserTest, Basics) {
   EXPECT_TRUE(state.seen_correlation_ids.empty());
 }
 
-// Versions a live Apache Kafka 4.3 broker negotiated in real produce/consume traffic
-// (captured via strace). FindFrameBoundary gates on IsSupportedAPIVersion, so a stale
-// max here drops these common operations on modern Kafka even after classification.
-TEST(KafkaParserTest, ModernKafkaVersionsAreSupported) {
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 12));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 18));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kMetadata, 13));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kListOffsets, 11));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kApiVersions, 4));
-}
-
 TEST(KafkaParserTest, ParseMultipleRequests) {
   auto produce_frame_view =
       CreateStringView<char>(CharArrayStringView<uint8_t>(testdata::kProduceRequest));
@@ -251,11 +240,13 @@ TEST(KafkaParserTest, ParseModernApiVersionsRequest) {
 // Guards the supported-version ranges against silently going stale again. Maxes
 // track current Kafka (verified against a 3.9 broker's ApiVersions response).
 TEST(KafkaApiVersionTest, ModernVersionsSupported) {
-  // First-frame and high-traffic APIs that modern clients/brokers actually use.
+  // High-traffic APIs at the versions a live Apache Kafka 4.3 broker negotiates
+  // (verified via strace of real produce/consume traffic).
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kApiVersions, 4));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 11));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 17));
-  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kListOffsets, 9));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 12));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 18));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kListOffsets, 11));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kMetadata, 13));
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFindCoordinator, 6));
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kJoinGroup, 9));
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kOffsetFetch, 9));
@@ -264,9 +255,9 @@ TEST(KafkaApiVersionTest, ModernVersionsSupported) {
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 7));
   EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 11));
 
-  // Versions beyond the current ceiling are still rejected.
+  // Versions beyond each API's ceiling are still rejected.
   EXPECT_FALSE(IsSupportedAPIVersion(APIKey::kApiVersions, 5));
-  EXPECT_FALSE(IsSupportedAPIVersion(APIKey::kFetch, 18));
+  EXPECT_FALSE(IsSupportedAPIVersion(APIKey::kFetch, 19));
 }
 
 }  // namespace kafka
