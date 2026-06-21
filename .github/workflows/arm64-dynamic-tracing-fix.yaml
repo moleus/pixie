@@ -76,6 +76,16 @@ env:
     //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:dynamic_tracer_test
     //src/stirling/source_connectors/dynamic_tracer/dynamic_tracing:goid_test
     //src/stirling/obj_tools:abi_model_test
+  # Kafka classification (the partial/coalesced-read inference fix) + the wire
+  # parser / decoder (modern api_versions + Fetch/Metadata v13+ topic_id).
+  KAFKA_TESTS: >-
+    //src/stirling/source_connectors/socket_tracer/bcc_bpf:protocol_inference_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka:parse_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka:stitcher_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder:packet_decoder_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder:produce_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder:fetch_test
+    //src/stirling/source_connectors/socket_tracer/protocols/kafka/decoder:metadata_test
 
 jobs:
   # 1) x86 tests only (no image): build the dynamic-tracing surface and RUN the BPF/unit tests.
@@ -126,6 +136,8 @@ jobs:
       run: bazel build --config=clang ${DT_TARGETS}
     - name: Run dynamic-tracing unit + integration tests (amd64)
       run: bazel test --config=clang --test_output=errors ${DT_TESTS}
+    - name: Run Kafka classification + parser/decoder tests (amd64)
+      run: bazel test --config=clang --test_output=errors ${KAFKA_TESTS}
 
   # 2) x86 PEM image (parallel with tests): build & push the x86_64 PEM image.
   build-x86-pem:
