@@ -26,6 +26,8 @@
 #     from fastbuild C++ (-g0) for a faster/smaller DT build (opt is already -g0, so the image is unchanged).
 #   * Bazel --output_base + --disk_cache live on the runner's /mnt volume (~70GB) instead of the ~20GB
 #     root fs, so cold image builds don't hit "No space left on device" (which forced a rerun before).
+#   * Build jobs use the base dev_image (not dev_image_with_extras): the container pull is
+#     extraction-bound (decompress/untar on few vCPUs), so the smaller base image shaves per-job startup.
 name: arm64-dynamic-tracing-fix
 on:
   workflow_dispatch:
@@ -80,7 +82,7 @@ jobs:
   test-x86:
     runs-on: ${{ github.event.inputs.x86_runner || 'ubuntu-latest' }}
     container:
-      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+      image: ghcr.io/pixie-io/dev_image:202604270358
       options: --privileged           # needed for BPF/uprobe tests (requires_bpf,requires_root)
       volumes:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
@@ -132,7 +134,7 @@ jobs:
       contents: read
       packages: write
     container:
-      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+      image: ghcr.io/pixie-io/dev_image:202604270358
       volumes:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
     steps:
@@ -195,7 +197,7 @@ jobs:
       contents: read
       packages: write
     container:
-      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
+      image: ghcr.io/pixie-io/dev_image:202604270358
       volumes:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
     steps:
