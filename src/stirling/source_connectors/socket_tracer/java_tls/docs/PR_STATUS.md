@@ -63,6 +63,8 @@ nothing in Kubernetes beyond the PEM. The audit of all of it found **zero issues
 5. **PEM injection correctness** — `absl::Substitute` has no `std::filesystem::path` overload (passed `lib` directly → compile error); fixed with `.string()` and explicit `"true"/"false"` rendering. Also, deliberately avoided two gaps in an earlier injection draft: reusing the profiler's `SelectLibWithDLOpenOrDie` (hard-requires `PixieJavaAgentTestFn`, which the jsse `.so` lacks → FATAL) and the JVMTI artifacts dir (collides when a JVM is both profiled and TLS-traced).
 6. **CI correctness** — multiarch manifest tag mismatch (`MANIFEST_UNKNOWN`) from `git rev-parse --short` length varying with checkout depth; tests previously filtered out by `--config=bpf`; remote cache never enabling because the config step ran under dash (`[[` unsupported) → pinned `shell: bash`.
 7. **Audit cleanups** — removed dead `rd16()` (collector.c) and `isLoaded()` (NativeBridge.java); corrected reversed direction-param docs (code was right: `kEgress=0`/write, `kIngress=1`/read).
+8. **Kafka not classified on modern/loaded clusters (the empty-table blocker)** — `infer_kafka_message` required a single read to contain exactly one full frame (`count == message_size`). On real traffic (long messages split across reads, TCP coalescing, TLS/JSSE chunks) that never holds, so connections stayed `protocol=Unknown` and `kafka_events` stayed empty even after the api_version gate was raised. Relaxed to classify partial (`declared >= count`, the broker's read-4-then-payload path) and coalesced (`count >= message_size`) reads, bounded to 100 MiB. **Validated against a live Apache Kafka 4.0 broker** (strace of real produce/consume): the old code dropped 3 large split-Produce reads (e.g. a 163,706-byte read of a 2,800,295-byte request) that the new code classifies; no regression on aligned traffic.
+9. **Modern Kafka api_versions rejected in framing** — the same real-broker strace showed Kafka 4.0 negotiating Produce v12 / Metadata v13 / ListOffsets v10, above the `APIVersionMap` caps (11/12/9), so `FindFrameBoundary`→`IsSupportedAPIVersion` rejected the most common operations. Bumped the three maxes to the verified versions.
 
 ## Test status (all re-run locally on this branch)
 
@@ -78,6 +80,10 @@ nothing in Kubernetes beyond the PEM. The audit of all of it found **zero issues
 | ABI model property test (PopLocation invariants) | committed; runs in CI (`abi_model_test`) |
 | Stirling BPF integration (`//…/bcc_bpf:socket_trace` real clang compile) | builds (see RESEARCH §7) |
 | PEM image compile incl. px_jattach Java-agent mode + injection | builds in CI |
+| Kafka classification: split / coalesced / high-version reads (`protocol_inference_test`) | **PASS** (runs in CI) |
+| End-to-end: split-read Produce exchange → reassembled → decoded `kafka_events` Record (`stitcher_test`) | **PASS** (runs in CI) |
+| Modern api_versions accepted by the frame-boundary gate (`parse_test`) | **PASS** (runs in CI) |
+| **Real Apache Kafka 4.0 broker** (strace replay of live produce/consume) — old vs new inference | new classifies 3 split Produce reads the old code dropped; **0 regressions** on aligned traffic |
 
 ## Not done / known limits
 
