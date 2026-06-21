@@ -418,41 +418,66 @@ static __inline enum message_type_t infer_kafka_request(const char* buf) {
 
 static __inline enum message_type_t infer_kafka_message(const char* buf, size_t count,
                                                         struct conn_info_t* conn_info) {
-  // Second statement checks whether suspected header matches the length of current packet.
-  // This shouldn't confuse with MySQL because MySQL uses little endian, and Kafka uses big endian.
-  bool use_prev_buf =
-      (conn_info->prev_count == 4) && ((size_t)read_big_endian_int32(conn_info->prev_buf) == count);
+  // Kafka frames a message as [int32 length][payload], where `length` excludes the 4
+  // length bytes and the payload begins with the request header:
+  //   api_key(2) api_version(2) correlation_id(4) ...
+  //
+  // Real traffic rarely delivers exactly one frame per read: long messages are split
+  // across reads, reads coalesce several frames, and TLS/JSSE plaintext arrives in
+  // unwrap-sized chunks. The old code required count == message_size exactly, so such
+  // connections were never classified (protocol stayed Unknown and kafka_events stayed
+  // empty). Inference only has to fire ONCE; the user-space stream parser
+  // (FindFrameBoundary) then reassembles exact frames. So we accept a partial or
+  // over-full read and rely on the request-header validation (infer_kafka_request)
+  // plus a bounded declared length for precision. Kafka is also inferred only after
+  // HTTP/MySQL/PGSQL/Mongo/CQL/Mux, so a false positive's blast radius is small.
+  //
+  // The big-endian length keeps this distinct from MySQL (little-endian length): a
+  // small MySQL length read as big-endian is a huge number, rejected by the bound.
 
-  if (use_prev_buf) {
-    count += 4;
+  // api_key(2) + api_version(2) + correlation_id(4)
+  static const int kMinReqHeader = 8;
+  // length(4) + the request header.
+  static const int kMinRequestLength = 4 + kMinReqHeader;
+  // Largest declared message we treat as a plausible frame (Kafka's default
+  // socket.request.max.bytes is 100 MiB). Bounding the declared length stops random
+  // data whose first 4 bytes are a large number from matching once we stop requiring a
+  // read to be exactly one frame.
+  static const int32_t kKafkaMaxMessageSize = 100 * 1024 * 1024;
+
+  // Path 1: the previous read was exactly the 4-byte length header, and this read is the
+  // payload (or a prefix of a long / split / TLS-chunked payload). The request header is
+  // at buf[0]. An exactly-4-byte preceding read whose value bounds this read is a strong
+  // Kafka-framing signal, so it's safe to classify here even on a partial payload. The
+  // length header was already consumed, so user space is asked to prepend it.
+  if (conn_info->prev_count == 4) {
+    const int32_t declared = read_big_endian_int32(conn_info->prev_buf);
+    if (declared >= (int32_t)count && declared <= kKafkaMaxMessageSize &&
+        count >= (size_t)kMinReqHeader && infer_kafka_request(buf) == kRequest) {
+      if (conn_info->protocol == kProtocolUnknown) {
+        conn_info->prepend_length_header = true;
+      }
+      return kRequest;
+    }
   }
 
-  // length(4 bytes) + api_key(2 bytes) + api_version(2 bytes) + correlation_id(4 bytes)
-  static const int kMinRequestLength = 12;
-  if (count < kMinRequestLength) {
+  // Path 2: the length header is in this read: buf = [int32 length][payload...]. Accept
+  // when the read holds at least one full frame -- count == message_size (exact) or
+  // count > message_size (coalesced); the declared length correctly predicting a frame
+  // boundary inside the read is itself corroborating. Long messages whose payload spans
+  // multiple reads are handled by Path 1 (the broker reads the 4-byte length first).
+  if (count < (size_t)kMinRequestLength) {
     return kUnknown;
   }
-
-  const int32_t message_size = use_prev_buf ? count : read_big_endian_int32(buf) + 4;
-
-  // Enforcing count to be exactly message_size + 4 to mitigate misclassification.
-  // However, this will miss long messages broken into multiple reads.
-  if (message_size < 0 || count != (size_t)message_size) {
+  const int32_t declared = read_big_endian_int32(buf);
+  if (declared < kMinReqHeader || declared > kKafkaMaxMessageSize) {
     return kUnknown;
   }
-  const char* request_buf = use_prev_buf ? buf : buf + 4;
-  enum message_type_t result = infer_kafka_request(request_buf);
-
-  // Kafka servers read in a 4-byte packet length header first. The first packet in the
-  // stream is used to infer protocol, but the header has already been read. One solution is to
-  // add another perf_submit of the 4-byte header, but this would impact the instruction limit.
-  // Not handling this case causes potential confusion in the parsers. Instead, we set a
-  // prepend_length_header field if and only if Kafka has just been inferred for the first time
-  // under the scenario described above. Length header is appended to user the buffer in user space.
-  if (use_prev_buf && result == kRequest && conn_info->protocol == kProtocolUnknown) {
-    conn_info->prepend_length_header = true;
+  const int32_t message_size = declared + 4;
+  if (count < (size_t)message_size) {
+    return kUnknown;
   }
-  return result;
+  return infer_kafka_request(buf + 4);
 }
 
 // Const Reference: https://www.rabbitmq.com/resources/specs/amqp0-9-1.xml

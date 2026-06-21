@@ -333,6 +333,60 @@ TEST(ProtocolInferenceTest, Kafka) {
   EXPECT_EQ(protocol_message.protocol, kProtocolKafka);
 }
 
+// Live traffic rarely delivers exactly one frame per read: long messages are split
+// across reads, reads coalesce several frames, TLS/JSSE plaintext arrives in chunks,
+// and modern clients negotiate high api_versions. The inference must classify the
+// connection in all of these cases (it only has to fire once; the user-space stream
+// parser reassembles exact frames afterward).
+TEST(ProtocolInferenceTest, KafkaPartialCoalescedAndVersions) {
+  // Long message split across reads: the broker reads the 4-byte length header first
+  // (declared length 256), then the payload arrives in chunks far smaller than 256.
+  // Inference must fire on the FIRST payload chunk, and ask user space to prepend the
+  // length header that was consumed by the separate 4-byte read.
+  {
+    struct conn_info_t conn_info = {};
+    constexpr uint8_t kLenHeader[] = {0x00, 0x00, 0x01, 0x00};  // declared length = 256
+    auto m =
+        infer_protocol(reinterpret_cast<const char*>(kLenHeader), sizeof(kLenHeader), &conn_info);
+    EXPECT_EQ(m.protocol, kProtocolUnknown);
+
+    // First chunk of the 256-byte payload: Fetch (api_key 1) v17, correlation_id 42,
+    // followed by a partial body. Only 16 of the 256 bytes are present.
+    constexpr uint8_t kPayloadChunk[] = {0x00, 0x01, 0x00, 0x11, 0x00, 0x00, 0x00, 0x2a,
+                                         0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00};
+    m = infer_protocol(reinterpret_cast<const char*>(kPayloadChunk), sizeof(kPayloadChunk),
+                       &conn_info);
+    EXPECT_EQ(m.protocol, kProtocolKafka);
+    EXPECT_TRUE(conn_info.prepend_length_header);
+  }
+
+  // Coalesced reads: two complete frames arrive in a single read (count > message_size
+  // of the first frame). Inference must still classify on the leading frame.
+  {
+    struct conn_info_t conn_info = {};
+    constexpr uint8_t kCoalesced[] = {
+        // frame 1: length 8, Fetch (1) v17, correlation_id 1
+        0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x00, 0x11, 0x00, 0x00, 0x00, 0x01,
+        // frame 2: length 8, Produce (0) v9, correlation_id 2
+        0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x02};
+    auto m =
+        infer_protocol(reinterpret_cast<const char*>(kCoalesced), sizeof(kCoalesced), &conn_info);
+    EXPECT_EQ(m.protocol, kProtocolKafka);
+  }
+
+  // Precision guard: a 4-byte read followed by bytes whose "header" is not a valid Kafka
+  // request (api_version wildly out of range) must NOT be misclassified as Kafka.
+  {
+    struct conn_info_t conn_info = {};
+    constexpr uint8_t kLen[] = {0x00, 0x00, 0x10, 0x00};  // declared 4096
+    infer_protocol(reinterpret_cast<const char*>(kLen), sizeof(kLen), &conn_info);
+    constexpr uint8_t kBadHeader[] = {0x00, 0x01, 0x7f, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00};
+    auto m =
+        infer_protocol(reinterpret_cast<const char*>(kBadHeader), sizeof(kBadHeader), &conn_info);
+    EXPECT_NE(m.protocol, kProtocolKafka);
+  }
+}
+
 TEST(ProtocolInferenceTest, NATS) {
   auto call = [](std::string_view msg) { return infer_nats_message(msg.data(), msg.size()); };
 
