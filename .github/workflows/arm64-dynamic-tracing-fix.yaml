@@ -9,7 +9,13 @@
 #     configurations that share no objects, so one job would just serialize two full compiles.
 #   * build-arm64 cross-compiles + pushes the aarch64 PEM (which also compiles the arm64 fix).
 #   * Push WITHOUT --config=stamp so the pem final link is cached across commits.
-#   * assemble-pem-image stitches the multiarch manifest with crane (no Bazel build), seconds.
+#   * Push with --remote_download_outputs=toplevel: `bazel run` otherwise (via .bazelrc `run
+#     --remote_download_outputs=all`) hydrates ALL ~5300 cached action outputs to the runner; we only
+#     need the final image, so toplevel skips ~158MB of intermediate .o/.a downloads (the warm bottleneck).
+#   * With the remote cache on, --jobs=50 (cache fetches are network-bound, not CPU-bound) and
+#     --experimental_remote_merkle_tree_cache speed the cache-hit-heavy graph.
+#   * assemble-pem-image installs crane on a bare runner (no multi-GB dev-image pull) and stitches the
+#     multiarch manifest in seconds.
 #   * SHARED REMOTE CACHE (BuildBuddy) when secret BB_API_KEY is set: every branch reads AND writes
 #     ONE cache, so cold starts on any branch are near-eliminated. Falls back to local disk cache
 #     (no remote dependency) when the secret is absent.
@@ -79,7 +85,7 @@ jobs:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with: { fetch-depth: 0 }
+      with: { fetch-depth: 1 }
     - run: git config --global --add safe.directory "$(pwd)"
     - uses: actions/cache@v4
       with:
@@ -104,7 +110,8 @@ jobs:
             echo "build --remote_upload_local_results=true"
             echo "build --experimental_remote_cache_compression"
             echo "build --remote_timeout=600"
-            echo "build --remote_download_toplevel"
+            echo "build --jobs=50"
+            echo "build --experimental_remote_merkle_tree_cache"
           } >> .bazelrc.local
           echo "remote cache: ENABLED (shared across all branches)"
         else
@@ -129,7 +136,7 @@ jobs:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with: { fetch-depth: 0 }
+      with: { fetch-depth: 1 }
     - run: git config --global --add safe.directory "$(pwd)"
     - uses: actions/cache@v4
       with:
@@ -154,7 +161,8 @@ jobs:
             echo "build --remote_upload_local_results=true"
             echo "build --experimental_remote_cache_compression"
             echo "build --remote_timeout=600"
-            echo "build --remote_download_toplevel"
+            echo "build --jobs=50"
+            echo "build --experimental_remote_merkle_tree_cache"
           } >> .bazelrc.local
           echo "remote cache: ENABLED (shared across all branches)"
         else
@@ -173,6 +181,7 @@ jobs:
         set -ex
         TAG="arm64-fix-${GITHUB_SHA::9}"
         bazel run -c opt --config=x86_64_sysroot \
+          --remote_download_outputs=toplevel \
           --//k8s:image_repository="${IMAGE_REPO}" \
           --//k8s:image_version="${TAG}-x86_64" \
           //k8s/vizier:pem_image_push >/dev/null
@@ -190,7 +199,7 @@ jobs:
       - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
     steps:
     - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with: { fetch-depth: 0 }
+      with: { fetch-depth: 1 }
     - run: git config --global --add safe.directory "$(pwd)"
     - uses: actions/cache@v4
       with:
@@ -214,7 +223,8 @@ jobs:
             echo "build --remote_upload_local_results=true"
             echo "build --experimental_remote_cache_compression"
             echo "build --remote_timeout=600"
-            echo "build --remote_download_toplevel"
+            echo "build --jobs=50"
+            echo "build --experimental_remote_merkle_tree_cache"
           } >> .bazelrc.local
           echo "remote cache: ENABLED (shared across all branches)"
         else
@@ -235,6 +245,7 @@ jobs:
         set -ex
         TAG="arm64-fix-${GITHUB_SHA::9}"
         bazel run -c opt --config=aarch64_sysroot \
+          --remote_download_outputs=toplevel \
           --//k8s:image_repository="${IMAGE_REPO}" \
           --//k8s:image_version="${TAG}-aarch64" \
           //k8s/vizier:pem_image_push >/dev/null
@@ -243,7 +254,9 @@ jobs:
       if: ${{ github.event.inputs.push_image == 'false' }}
       run: bazel build --config=aarch64_sysroot //src/vizier/services/agent/pem:pem_image
 
-  # 4) Assemble the multiarch PEM manifest (crane only). Gated on tests passing (needs test-x86).
+  # 4) Assemble the multiarch PEM manifest. Pure manifest surgery with crane (no Bazel build), so it
+  #    runs on a BARE runner and installs crane (a single static binary) instead of pulling the
+  #    multi-GB dev image just to get crane (~84s saved). Gated on tests passing (needs test-x86).
   assemble-pem-image:
     if: ${{ github.event.inputs.push_image != 'false' }}
     needs: [test-x86, build-x86-pem, build-arm64]
@@ -251,25 +264,27 @@ jobs:
     permissions:
       contents: read
       packages: write
-    container:
-      image: ghcr.io/pixie-io/dev_image_with_extras:202604270358
     env:
       COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
       COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
     steps:
-    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
-      with: { fetch-depth: 1 }
-    - run: git config --global --add safe.directory "$(pwd)"
     - name: Login to GHCR
       uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
       with:
         registry: ghcr.io
         username: ${{ github.actor }}
         password: ${{ github.token }}
-    - name: Assemble multiarch PEM manifest
+    - name: Assemble multiarch PEM manifest (crane)
       shell: bash
       run: |
         set -ex
+        # crane + cosign are single static binaries; install the latest release (no dev image needed).
+        # GitHub's /releases/latest/download/ redirect avoids pinning a version; asset names are stable.
+        mkdir -p "$HOME/bin"
+        curl -fsSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
+          | tar -xz -C "$HOME/bin" crane
+        export PATH="$HOME/bin:$PATH"
+        crane version
         TAG="arm64-fix-${GITHUB_SHA::9}"
         IMG="${IMAGE_REPO}/vizier-pem_image"
         crane index append \
@@ -278,6 +293,8 @@ jobs:
           --tag "${IMG}:${TAG}"
         echo "PUSHED PEM: ${IMG}:${TAG}"
         if [[ -n "${COSIGN_PRIVATE_KEY:-}" ]]; then
+          curl -fsSL -o "$HOME/bin/cosign" https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-amd64
+          chmod +x "$HOME/bin/cosign"
           digest="$(crane digest "${IMG}:${TAG}")"
           cosign sign --key env://COSIGN_PRIVATE_KEY --yes -r "${IMG}:${TAG}@${digest}"
         else
