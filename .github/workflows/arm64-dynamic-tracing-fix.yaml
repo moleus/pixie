@@ -93,9 +93,9 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /mnt/bazel-disk
-        key: bazel-x86dt-v3-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        key: bazel-x86dt-v4-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
         restore-keys: |
-          bazel-x86dt-v3-
+          bazel-x86dt-v4-
     - name: Bazel config
       shell: bash
       run: |
@@ -104,6 +104,7 @@ jobs:
           echo "build --disk_cache=/mnt/bazel-disk"
           echo "build --experimental_reuse_sandbox_directories"
           echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build --experimental_merged_skyframe_analysis_execution"
           echo "build:clang --copt=-g0"
         } >> .bazelrc.local
         if [[ -n "${BB_API_KEY:-}" ]]; then
@@ -144,9 +145,9 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /mnt/bazel-disk
-        key: bazel-x86pem-v3-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        key: bazel-x86pem-v4-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
         restore-keys: |
-          bazel-x86pem-v3-
+          bazel-x86pem-v4-
     - name: Bazel config
       shell: bash
       run: |
@@ -155,6 +156,7 @@ jobs:
           echo "build --disk_cache=/mnt/bazel-disk"
           echo "build --experimental_reuse_sandbox_directories"
           echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build --experimental_merged_skyframe_analysis_execution"
           echo "build:clang --copt=-g0"
         } >> .bazelrc.local
         if [[ -n "${BB_API_KEY:-}" ]]; then
@@ -207,8 +209,8 @@ jobs:
     - uses: actions/cache@v4
       with:
         path: /mnt/bazel-disk
-        key: bazel-arm-v3-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
-        restore-keys: bazel-arm-v3-
+        key: bazel-arm-v4-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: bazel-arm-v4-
     - name: Bazel config
       shell: bash
       run: |
@@ -217,6 +219,7 @@ jobs:
           echo "build --disk_cache=/mnt/bazel-disk"
           echo "build --experimental_reuse_sandbox_directories"
           echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build --experimental_merged_skyframe_analysis_execution"
           echo "build:clang --copt=-g0"
         } >> .bazelrc.local
         if [[ -n "${BB_API_KEY:-}" ]]; then
