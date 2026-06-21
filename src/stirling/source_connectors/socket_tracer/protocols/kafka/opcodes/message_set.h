@@ -55,6 +55,21 @@ struct MessageSet {
 
   void ToJSON(utils::JSONObjectBuilder* builder, bool omit_record_batches = true) const {
     builder->WriteKV("size", size);
+    // Surface the record keys (without values). A Kafka record key is the partitioning
+    // identifier and is typically small; emitting just the keys lets consumers correlate a
+    // produced record to its (topic, partition, offset) without storing the full payload.
+    // Keyless records (null/empty key) are skipped so unkeyed topics are unaffected.
+    std::vector<std::string> record_keys;
+    for (const auto& record_batch : record_batches) {
+      for (const auto& record : record_batch.records) {
+        if (!record.key.empty()) {
+          record_keys.push_back(record.key);
+        }
+      }
+    }
+    if (!record_keys.empty()) {
+      builder->WriteKV("record_keys", record_keys);
+    }
     if (!omit_record_batches) {
       builder->WriteKVArrayRecursive<RecordBatch>("record_batchs", record_batches);
     }

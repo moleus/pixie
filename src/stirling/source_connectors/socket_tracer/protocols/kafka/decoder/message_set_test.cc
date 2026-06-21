@@ -74,6 +74,23 @@ TEST(KafkaPacketDecoderTest, ExtractRecordBatchV9) {
   EXPECT_OK_AND_EQ(decoder.ExtractRecordBatch(), expected_result);
 }
 
+TEST(KafkaMessageSetToJSONTest, SurfacesNonEmptyRecordKeys) {
+  // A keyed record's key is surfaced under "record_keys"; the value is never emitted.
+  MessageSet message_set{.size = 42,
+                         .record_batches = {RecordBatch{
+                             {{.key = "order-42", .value = "payload-not-emitted"}}}}};
+  const std::string json = ToString(message_set);
+  EXPECT_THAT(json, ::testing::HasSubstr("\"record_keys\":[\"order-42\"]"));
+  EXPECT_THAT(json, ::testing::Not(::testing::HasSubstr("payload-not-emitted")));
+}
+
+TEST(KafkaMessageSetToJSONTest, OmitsKeysForKeylessRecords) {
+  // Unkeyed records (null/empty key) must not add a "record_keys" field.
+  MessageSet message_set{.size = 14, .record_batches = {RecordBatch{{{.key = "", .value = "v"}}}}};
+  const std::string json = ToString(message_set);
+  EXPECT_THAT(json, ::testing::Not(::testing::HasSubstr("record_keys")));
+}
+
 }  // namespace kafka
 }  // namespace protocols
 }  // namespace stirling
