@@ -45,6 +45,7 @@ on:
         default: true
   push:
     branches: ['main', 'arm64-fix', 'fix/arm64-dynamic-tracing', 'claude/wonderful-bell-nm4uhr']
+    paths-ignore: ['**.md']   # don't run the expensive image build for docs-only changes
   schedule:
   # Weekly (Sun 07:09 UTC) on the default branch to keep the shared Bazel cache warm
   # (GitHub evicts caches untouched for 7 days), so feature-branch cold starts stay near-warm.
