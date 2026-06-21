@@ -81,6 +81,11 @@ REPOSITORY_LOCATIONS = dict(
         strip_prefix = "xxHash-0.7.3",
         urls = ["https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.7.3.tar.gz"],
     ),
+    com_github_facebook_zstd = dict(
+        sha256 = "30f35f71c1203369dc979ecde0400ffea93c27391bfd2ac5a9715d2173d92ff7",
+        strip_prefix = "zstd-1.5.6",
+        urls = ["https://github.com/facebook/zstd/archive/refs/tags/v1.5.6.tar.gz"],
+    ),
     com_github_derrickburns_tdigest = dict(
         sha256 = "e420c7f9c73fe2af59ab69f302ea8279ec41ae3d241b749277761fdc2e8abfd7",
         strip_prefix = "tdigest-85e0f70092460e60236821db4c25143768d3da12",
