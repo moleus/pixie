@@ -63,6 +63,17 @@ TEST(KafkaParserTest, Basics) {
   EXPECT_TRUE(state.seen_correlation_ids.empty());
 }
 
+// Versions a live Apache Kafka 4.0 broker negotiated in real produce/consume traffic
+// (captured via strace). FindFrameBoundary gates on IsSupportedAPIVersion, so a stale
+// max here drops these common operations on modern Kafka even after classification.
+TEST(KafkaParserTest, ModernKafkaVersionsAreSupported) {
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kProduce, 12));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kMetadata, 13));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kListOffsets, 10));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kFetch, 17));
+  EXPECT_TRUE(IsSupportedAPIVersion(APIKey::kApiVersions, 4));
+}
+
 TEST(KafkaParserTest, ParseMultipleRequests) {
   auto produce_frame_view =
       CreateStringView<char>(CharArrayStringView<uint8_t>(testdata::kProduceRequest));

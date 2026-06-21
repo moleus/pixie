@@ -233,10 +233,14 @@ inline const absl::flat_hash_map<APIKey, APIVersionData> APIVersionMap = {
     // makes IsSupportedAPIVersion reject modern frames -> the connection is
     // never classified as Kafka -> protocol shows up as Unknown.
     // Setting min supported version to 1 to help finding frame boundary.
-    {APIKey::kProduce, {1, 11, 9}},
+    // Maxes verified against a live Apache Kafka 4.0 broker (strace of real
+    // produce/consume traffic negotiated Produce v12, ListOffsets v10, Metadata v13).
+    // A too-low max makes IsSupportedAPIVersion reject the frame in FindFrameBoundary,
+    // so these common operations would never be decoded on modern Kafka.
+    {APIKey::kProduce, {1, 12, 9}},
     {APIKey::kFetch, {0, 17, 12}},
-    {APIKey::kListOffsets, {0, 9, 6}},
-    {APIKey::kMetadata, {0, 12, 9}},
+    {APIKey::kListOffsets, {0, 10, 6}},
+    {APIKey::kMetadata, {0, 13, 9}},
     {APIKey::kLeaderAndIsr, {0, 5, 4}},
     {APIKey::kStopReplica, {0, 3, 2}},
     {APIKey::kUpdateMetadata, {0, 7, 6}},
