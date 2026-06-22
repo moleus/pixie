@@ -36,8 +36,14 @@ configure_make(
         "--enable-shared=no",
         "--disable-frame-pointers",
         "--enable-libunwind",
-        "--host x86_64-unknown-linux-gnu",
-    ],
+        # The configure --host must match the TARGET arch. Hardcoding x86_64 on
+        # an aarch64 cross-build makes autoconf treat host==build==x86_64, so the
+        # cross-compile feature tests use native x86 assumptions instead of the
+        # aarch64 target's — wrong tcmalloc tuning on arm64.
+    ] + select({
+        "@platforms//cpu:aarch64": ["--host aarch64-unknown-linux-gnu"],
+        "//conditions:default": ["--host x86_64-unknown-linux-gnu"],
+    }),
     lib_source = "@com_github_gperftools_gperftools//:all",
     linkopts = ["-lpthread"],
     out_static_libs = select({
