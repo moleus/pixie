@@ -1,0 +1,103 @@
+---
+# Fast hypothesis test (no bazel, no pem build, free runners): does gperftools 2.9.1's
+# configure --host or tcmalloc page size actually change memory behaviour on arm64?
+# Builds tiny gperftools variants on BOTH a native amd64 and a native arm64 runner and
+# runs an identical tcmalloc microbench. Source review showed configure has NO run-tests
+# and decides arch by compile-tests, so --host should be a no-op — this confirms it
+# empirically and measures whether page size (8K vs 64K) is a real lever. Minutes/iteration.
+name: gperftools-arch-experiment
+on:
+  push:
+    branches: ['exp-gperftools-arch-host']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  exp:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Runner facts
+        run: |
+          echo "### ${{ matrix.arch }} runner facts" >> "$GITHUB_STEP_SUMMARY"
+          { echo '```'; echo "uname -m : $(uname -m)";
+            echo "PAGE_SIZE: $(getconf PAGE_SIZE)";
+            echo "nproc    : $(nproc)";
+            lscpu | grep -iE 'cache|model name' || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq build-essential libtool libunwind-dev curl
+
+      - name: Fetch gperftools 2.9.1
+        run: curl -fsSL https://github.com/gperftools/gperftools/releases/download/gperftools-2.9.1/gperftools-2.9.1.tar.gz | tar xz
+
+      - name: Microbench source
+        run: |
+          cat > "$GITHUB_WORKSPACE/bench.cc" <<'CC'
+          #include <cstdio>
+          #include <cstdlib>
+          #include <cstring>
+          #include <vector>
+          #include "gperftools/malloc_extension.h"
+          static long P(const char* k){ size_t v=0; MallocExtension::instance()->GetNumericProperty(k,&v); return (long)v; }
+          static long S(const char* f){ FILE* fp=fopen("/proc/self/status","r"); char l[256]; long v=-1;
+            while(fgets(l,sizeof l,fp)) if(!strncmp(l,f,strlen(f))){ sscanf(l+strlen(f)," %ld",&v); break; } fclose(fp); return v; }
+          int main(){
+            std::vector<void*> keep;
+            // fragmented small allocs: keep ~half → partial spans (page-rounding sensitive)
+            for(int i=0;i<600000;i++){ size_t s=16+(size_t)(i%4080); void* p=malloc(s); memset(p,1,s);
+              if(i%2) keep.push_back(p); else free(p); }
+            // large transient (mimic DWARF / socket-buffer spike), freed back
+            for(int i=0;i<200;i++){ size_t s=(size_t)(1<<20)*(1+(i%8)); void* p=malloc(s); memset(p,2,s); free(p); }
+            MallocExtension::instance()->ReleaseFreeMemory();
+            printf("current_allocated=%ld heap_size=%ld pageheap_free=%ld pageheap_unmapped=%ld VmRSS_kb=%ld VmHWM_kb=%ld\n",
+              P("generic.current_allocated_bytes"),P("generic.heap_size"),
+              P("tcmalloc.pageheap_free_bytes"),P("tcmalloc.pageheap_unmapped_bytes"),
+              S("VmRSS:"),S("VmHWM:"));
+            for(void* p:keep) free(p); return 0;
+          }
+          CC
+
+      - name: Build variants + bench
+        run: |
+          set -e
+          SRC="$PWD/gperftools-2.9.1"
+          build_run () {
+            local label="$1"; shift
+            local d="/tmp/$label"
+            rm -rf "$d"; cp -a "$SRC" "$d"; ( cd "$d"
+              ./configure --enable-shared=no --disable-frame-pointers --enable-libunwind "$@" >cfg.log 2>&1 || { tail -30 cfg.log; exit 1; }
+              cp src/config.h "/tmp/cfg_$label.h"
+              make -j"$(nproc)" >make.log 2>&1 || { tail -30 make.log; exit 1; }
+              local LIB=.libs/libtcmalloc_and_profiler.a; [ -f "$LIB" ] || LIB=.libs/libtcmalloc.a
+              g++ -O2 -I"$d/src" "$GITHUB_WORKSPACE/bench.cc" "$d/$LIB" -lunwind -lpthread -o "/tmp/bench_$label"
+              printf '%s | ' "$label"; "/tmp/bench_$label" )
+          }
+          echo "### ${{ matrix.arch }} results" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          # (1) null-confirm: --host should not change config or memory
+          build_run host_x86  --host x86_64-unknown-linux-gnu        | tee -a "$GITHUB_STEP_SUMMARY"
+          build_run host_arm  --host aarch64-unknown-linux-gnu       | tee -a "$GITHUB_STEP_SUMMARY"
+          # (2) real allocator lever: tcmalloc internal page size 8K (default) vs 64K
+          build_run pg8                                              | tee -a "$GITHUB_STEP_SUMMARY"
+          build_run pg64      --with-tcmalloc-pagesize=64            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "config.h diff host_x86 vs host_arm (expect empty):" >> "$GITHUB_STEP_SUMMARY"
+          echo '```diff' >> "$GITHUB_STEP_SUMMARY"
+          diff -u /tmp/cfg_host_x86.h /tmp/cfg_host_arm.h >> "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload config.h variants
+        uses: actions/upload-artifact@v4
+        with:
+          name: configs-${{ matrix.arch }}
+          path: /tmp/cfg_*.h
