@@ -123,6 +123,28 @@ container_push(
     format = "Docker",
 )
 
+# indexer-only image target. Mirrors the PEM-only pattern in k8s/vizier/BUILD.bazel:
+# CI that only needs to ship indexer-server (e.g. verifying a fix to its ES index
+# mapping) shouldn't have to build/push the full 15-image cloud bundle.
+INDEXER_IMAGE_TO_LABEL = {
+    "$(IMAGE_PREFIX)/cloud-indexer_server_image:$(BUNDLE_VERSION)": "//src/cloud/indexer:indexer_server_image",
+}
+
+container_bundle(
+    name = "indexer_image_bundle",
+    images = INDEXER_IMAGE_TO_LABEL,
+    toolchains = [
+        "//k8s:image_prefix",
+        "//k8s:bundle_version",
+    ],
+)
+
+container_push(
+    name = "indexer_image_push",
+    bundle = ":indexer_image_bundle",
+    format = "Docker",
+)
+
 genrule(
     name = "cloud_image_list",
     srcs = [

@@ -1,0 +1,95 @@
+---
+# Builds & pushes ONLY the indexer-server image (//k8s/cloud:indexer_image_push),
+# not the full 15-image cloud bundle -- for verifying a fix to its ES index
+# mapping without the org-only oracle runner / cosign signing the real
+# cloud-release workflow (.github/workflows/cloud_release.yaml) requires.
+# Mirrors the PEM-only pattern in arm64-dynamic-tracing-fix.yaml.
+name: cloud-indexer-image
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: 'Runner label (larger = faster; e.g. ubuntu-latest)'
+        default: 'ubuntu-latest'
+      image_repo:
+        description: 'Registry to push the image to (public)'
+        default: 'ghcr.io/moleus'
+  push:
+    branches: ['exp-gperftools-arch-host']
+    paths:
+    - 'src/cloud/indexer/**'
+    - 'k8s/cloud/BUILD.bazel'
+    - '.github/workflows/cloud-indexer-image.yaml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
+  # OPTIONAL shared remote cache, see arm64-dynamic-tracing-fix.yaml for rationale.
+  BB_API_KEY: ${{ secrets.BB_API_KEY }}
+
+jobs:
+  build-and-push-indexer:
+    runs-on: ${{ github.event.inputs.runner || 'ubuntu-latest' }}
+    permissions:
+      contents: read
+      packages: write
+    container:
+      image: ghcr.io/pixie-io/dev_image:202604270358
+      volumes:
+      - /mnt:/mnt
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: { fetch-depth: 1 }
+    - run: git config --global --add safe.directory "$(pwd)"
+    - uses: actions/cache@v4
+      with:
+        path: /mnt/bazel-disk
+        key: bazel-indexer-v1-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: |
+          bazel-indexer-v1-
+    - name: Bazel config
+      shell: bash
+      run: |
+        {
+          echo "startup --output_base=/mnt/bazelroot"
+          echo "build --disk_cache=/mnt/bazel-disk"
+          echo "build --experimental_reuse_sandbox_directories"
+          echo "build --experimental_disk_cache_gc_max_size=8G"
+        } >> .bazelrc.local
+        if [[ -n "${BB_API_KEY:-}" ]]; then
+          {
+            echo "build --remote_cache=grpcs://remote.buildbuddy.io"
+            echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}"
+            echo "build --remote_upload_local_results=true"
+            echo "build --experimental_remote_cache_compression"
+            echo "build --remote_timeout=600"
+            echo "build --jobs=50"
+          } >> .bazelrc.local
+          echo "remote cache: ENABLED"
+        else
+          echo "remote cache: disabled (set repo secret BB_API_KEY to enable); local disk cache only"
+        fi
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
+    - name: Login to GHCR
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3.7.0
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ github.token }}
+    - name: Build & push indexer-server image
+      shell: bash
+      run: |
+        set -ex
+        TAG="ngram-fix-${GITHUB_SHA::9}"
+        bazel run -c opt --config=x86_64_sysroot \
+          --remote_download_outputs=toplevel \
+          --//k8s:image_repository="${IMAGE_REPO}" \
+          --//k8s:image_version="${TAG}" \
+          //k8s/cloud:indexer_image_push >/dev/null
+        echo "PUSHED: ${IMAGE_REPO}/cloud-indexer_server_image:${TAG}"
