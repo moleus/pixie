@@ -65,6 +65,13 @@ pl_cc_binary(
     ],
 )
 
+# Image of stirling_ch: the base carries the packaged kernel headers (bpf_layer) for nodes without them.
+cc_image(
+    name = "stirling_ch_image",
+    base = ":stirling_binary_base_image",
+    binary = ":stirling_ch",
+)
+
 cc_image(
     name = "stirling_wrapper_image",
     base = ":stirling_binary_base_image",

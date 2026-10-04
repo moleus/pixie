@@ -1,0 +1,111 @@
+---
+# Builds the stirling_ch image (Stirling + ClickHouse sink, //src/stirling/binaries:stirling_ch_image) for
+# x86_64 and aarch64 and pushes one multiarch tag to GHCR. Bazel and cache layout follow
+# arm64-dynamic-tracing-fix.yaml: output base and disk cache on /mnt, optional BuildBuddy cache (BB_API_KEY).
+# The image tarball is built by Bazel and pushed with crane, so no container_push stamping is needed.
+name: stirling-ch-image
+on:
+  workflow_dispatch:
+    inputs:
+      image_repo:
+        description: 'Registry path to push to'
+        default: 'ghcr.io/moleus'
+  push:
+    branches: ['exp-stirling-clickhouse']
+    paths-ignore: ['**.md']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPO: ${{ github.event.inputs.image_repo || 'ghcr.io/moleus' }}
+  IMAGE_NAME: stirling-ch
+  BB_API_KEY: ${{ secrets.BB_API_KEY }}
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - {arch: x86_64, config: x86_64_sysroot}
+        - {arch: aarch64, config: aarch64_sysroot}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    container:
+      image: ghcr.io/pixie-io/dev_image:202604270358
+      volumes:
+      - /mnt:/mnt                      # host temp disk (~70GB) for Bazel output_base + disk cache
+    steps:
+    - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      with: {fetch-depth: 1}
+    - run: git config --global --add safe.directory "$(pwd)"
+    - uses: actions/cache@v4
+      with:
+        path: /mnt/bazel-disk
+        key: bazel-stirlingch-${{ matrix.arch }}-v1-${{ hashFiles('WORKSPACE', 'bazel/**', '.bazelversion') }}
+        restore-keys: |
+          bazel-stirlingch-${{ matrix.arch }}-v1-
+          bazel-x86pem-v4-
+          bazel-arm-v4-
+    - name: Bazel config
+      shell: bash
+      run: |
+        {
+          echo "startup --output_base=/mnt/bazelroot"
+          echo "build --disk_cache=/mnt/bazel-disk"
+          echo "build --experimental_reuse_sandbox_directories"
+          echo "build --experimental_disk_cache_gc_max_size=8G"
+          echo "build:clang --copt=-g0"
+        } >> .bazelrc.local
+        if [[ -n "${BB_API_KEY:-}" ]]; then
+          {
+            echo "build --remote_cache=grpcs://remote.buildbuddy.io"
+            echo "build --remote_header=x-buildbuddy-api-key=${BB_API_KEY}"
+            echo "build --remote_upload_local_results=true"
+            echo "build --experimental_remote_cache_compression"
+            echo "build --remote_timeout=600"
+            echo "build --jobs=50"
+          } >> .bazelrc.local
+        fi
+        echo "import %workspace%/.bazelrc.local" >> .bazelrc
+    - name: Build the image tarball (${{ matrix.arch }})
+      run: bazel build -c opt --config=${{ matrix.config }} //src/stirling/binaries:stirling_ch_image.tar
+    - name: Push with crane
+      shell: bash
+      run: |
+        set -ex
+        mkdir -p "$HOME/bin"
+        curl -fsSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
+          | tar -xz -C "$HOME/bin" crane
+        export PATH="$HOME/bin:$PATH"
+        echo "${{ github.token }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+        TAG="${GITHUB_SHA::9}-${{ matrix.arch }}"
+        crane push bazel-bin/src/stirling/binaries/stirling_ch_image.tar "${IMAGE_REPO}/${IMAGE_NAME}:${TAG}"
+
+  manifest:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+    - name: Multiarch tag
+      shell: bash
+      run: |
+        set -ex
+        mkdir -p "$HOME/bin"
+        curl -fsSL https://github.com/google/go-containerregistry/releases/latest/download/go-containerregistry_Linux_x86_64.tar.gz \
+          | tar -xz -C "$HOME/bin" crane
+        export PATH="$HOME/bin:$PATH"
+        echo "${{ github.token }}" | crane auth login ghcr.io -u "${{ github.actor }}" --password-stdin
+        IMG="${IMAGE_REPO}/${IMAGE_NAME}"
+        crane index append --manifest "${IMG}:${GITHUB_SHA::9}-x86_64" --manifest "${IMG}:${GITHUB_SHA::9}-aarch64" \
+          --tag "${IMG}:${GITHUB_SHA::9}"
+        echo "PUSHED ${IMG}:${GITHUB_SHA::9}" >> "$GITHUB_STEP_SUMMARY"
