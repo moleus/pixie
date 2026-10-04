@@ -60,6 +60,10 @@ DEFINE_int64(ch_table_bytes, 16 << 20, "max_bytes_to_keep of each Memory table."
 DEFINE_int64(ch_max_string_bytes, 1024, "Strings longer than this are cut.");
 DEFINE_int32(ch_queue_batches, 256, "Batches waiting for insert; more are dropped.");
 DEFINE_string(node_name, gflags::StringFromEnv("NODE_NAME", ""), "Value of the node column.");
+DEFINE_string(ch_drop_comms, "stirling_ch,clickhouse-serv",
+              "Comma-separated process names (/proc/<pid>/comm) whose rows are not written: the "
+              "agent's own inserts and the node ClickHouse would trace themselves.");
+DEFINE_bool(ch_compress, true, "Memory tables keep blocks LZ4-compressed (SETTINGS compress = 1).");
 DEFINE_bool(ch_local_pods_only, false,
             "Write only rows of pods listed in this node's /var/log/pods. For nodes that share one "
             "kernel (k3d, kind): every node sees every process, this keeps one copy of each row.");
@@ -79,6 +83,7 @@ namespace {
 Stirling* g_stirling = nullptr;
 absl::flat_hash_map<uint64_t, InfoClass> g_table_info_map;
 absl::flat_hash_set<std::string> g_enabled_tables;
+absl::flat_hash_set<std::string> g_drop_comms;
 
 std::string CHTableName(std::string_view stirling_name) {
   return absl::StrReplaceAll(stirling_name, {{".", "_"}});
@@ -206,9 +211,9 @@ class CHWriter {
       }
       ddl_.push_back(absl::Substitute(
           "CREATE TABLE IF NOT EXISTS `$0`.`$1` ($2) ENGINE = Memory "
-          "SETTINGS max_bytes_to_keep = $3, min_bytes_to_keep = $4",
+          "SETTINGS max_bytes_to_keep = $3, min_bytes_to_keep = $4, compress = $5",
           FLAGS_ch_database, CHTableName(schema.name()), absl::StrJoin(cols, ", "),
-          FLAGS_ch_table_bytes, FLAGS_ch_table_bytes * 3 / 4));
+          FLAGS_ch_table_bytes, FLAGS_ch_table_bytes * 3 / 4, FLAGS_ch_compress ? 1 : 0));
     }
   }
 
@@ -230,6 +235,7 @@ class CHWriter {
       if (upid_idx >= 0) {
         p = resolver_.Resolve(px::md::UPID(rb[upid_idx]->Get<px::types::UInt128Value>(r).val));
         if (FLAGS_ch_local_pods_only && !p.local_pod) continue;
+        if (g_drop_comms.contains(p.comm)) continue;
       }
       rows.push_back(r);
       procs.push_back(std::move(p));
@@ -408,6 +414,7 @@ int main(int argc, char** argv) {
 
   px::EnvironmentGuard env_guard(&argc, argv);
   g_enabled_tables = absl::StrSplit(FLAGS_ch_tables, ",", absl::SkipWhitespace());
+  g_drop_comms = absl::StrSplit(FLAGS_ch_drop_comms, ",", absl::SkipWhitespace());
 
   std::unique_ptr<Stirling> stirling =
       Stirling::Create(px::stirling::CreateSourceRegistryFromFlag());
