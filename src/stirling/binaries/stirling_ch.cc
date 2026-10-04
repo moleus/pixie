@@ -23,6 +23,7 @@
 //   /proc/<pid>/cgroup        -> pod UID
 //   /var/log/pods/<ns>_<pod>_<uid> -> namespace and pod name
 
+#include <algorithm>
 #include <csignal>
 #include <deque>
 #include <filesystem>
@@ -34,6 +35,8 @@
 #include <thread>
 
 #include <absl/base/internal/spinlock.h>
+#include <absl/container/flat_hash_set.h>
+#include <absl/strings/ascii.h>
 #include <absl/strings/str_replace.h>
 #include <absl/strings/str_split.h>
 #include <clickhouse/client.h>
@@ -67,6 +70,9 @@ DEFINE_bool(ch_compress, true, "Memory tables keep blocks LZ4-compressed (SETTIN
 DEFINE_bool(ch_local_pods_only, false,
             "Write only rows of pods listed in this node's /var/log/pods. For nodes that share one "
             "kernel (k3d, kind): every node sees every process, this keeps one copy of each row.");
+DEFINE_string(ch_redact_headers, "authorization,proxy-authorization,cookie,set-cookie,x-api-key",
+              "Header names (case-insensitive) whose values are replaced by <redacted> in the "
+              "req_headers and resp_headers columns. Empty = no redaction.");
 DEFINE_int32(timeout_secs, -1, "If non-negative, run this long and exit.");
 
 using ::px::Status;
@@ -107,6 +113,64 @@ std::string CHType(DataType t) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Header redaction. Stirling writes headers as a JSON object of strings: {"Name":"value",...}. The value
+// of a listed name (case-insensitive) becomes "<redacted>". A linear scan, no std::regex: libstdc++
+// regex recurses per character and can overflow the stack on long values. A value cut by the Stirling
+// size limit (no closing quote) is redacted to the end of the string.
+const absl::flat_hash_set<std::string>& RedactedHeaderNames() {
+  static const auto* names = [] {
+    auto* set = new absl::flat_hash_set<std::string>();
+    for (std::string_view n : absl::StrSplit(FLAGS_ch_redact_headers, ',', absl::SkipWhitespace())) {
+      set->insert(absl::AsciiStrToLower(absl::StripAsciiWhitespace(n)));
+    }
+    return set;
+  }();
+  return *names;
+}
+
+// End of the JSON string that starts after the opening quote at `pos`: index of the closing quote,
+// or json.size() if there is none.
+size_t JSONStringEnd(std::string_view json, size_t pos) {
+  while (pos < json.size()) {
+    if (json[pos] == '\\') {
+      pos += 2;
+    } else if (json[pos] == '"') {
+      return pos;
+    } else {
+      ++pos;
+    }
+  }
+  return json.size();
+}
+
+std::string RedactHeaders(std::string_view json) {
+  const auto& names = RedactedHeaderNames();
+  std::string out;
+  out.reserve(json.size());
+  size_t i = 0;
+  bool expect_key = true;  // Inside the object strings alternate: key, value, key, value.
+  bool redact_value = false;
+  while (i < json.size()) {
+    if (json[i] != '"') {
+      out.push_back(json[i++]);
+      continue;
+    }
+    size_t end = JSONStringEnd(json, i + 1);
+    std::string_view str = json.substr(i + 1, end - i - 1);
+    if (expect_key) {
+      redact_value = names.contains(absl::AsciiStrToLower(str));
+      out.append(json.substr(i, std::min(end + 1, json.size()) - i));
+    } else if (redact_value) {
+      out.append("\"<redacted>\"");
+    } else {
+      out.append(json.substr(i, std::min(end + 1, json.size()) - i));
+    }
+    expect_key = !expect_key;
+    i = end + 1;
+  }
+  return out;
+}
+
 // Pod of a local process. Cached by PID and process start time.
 // ---------------------------------------------------------------------------------------------
 
@@ -272,9 +336,16 @@ class CHWriter {
         }
         case DataType::STRING: {
           auto c = std::make_shared<clickhouse::ColumnString>();
+          const bool headers = el.name() == "req_headers" || el.name() == "resp_headers";
           for (size_t r : rows) {
             std::string_view s = col->Get<px::types::StringValue>(r);
-            c->Append(s.substr(0, FLAGS_ch_max_string_bytes));
+            if (headers && !RedactedHeaderNames().empty()) {
+              // Redact before the cut: a cut can remove the closing quote of a secret value.
+              std::string red = RedactHeaders(s);
+              c->Append(std::string_view(red).substr(0, FLAGS_ch_max_string_bytes));
+            } else {
+              c->Append(s.substr(0, FLAGS_ch_max_string_bytes));
+            }
           }
           block.AppendColumn(el.name(), c);
           break;
