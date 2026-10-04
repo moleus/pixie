@@ -52,6 +52,19 @@ pl_cc_binary(
     ],
 )
 
+# Stirling alone, writing every table into a ClickHouse server on the same node.
+pl_cc_binary(
+    name = "stirling_ch",
+    srcs = ["stirling_ch.cc"],
+    deps = [
+        "//src/common/signal:cc_library",
+        "//src/common/system:cc_library",
+        "//src/shared/upid:cc_library",
+        "//src/stirling:cc_library",
+        "@com_github_clickhouse_clickhouse_cpp//:clickhouse_cpp",
+    ],
+)
+
 cc_image(
     name = "stirling_wrapper_image",
     base = ":stirling_binary_base_image",
